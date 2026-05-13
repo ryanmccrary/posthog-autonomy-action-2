@@ -42731,6 +42731,8 @@ const configSchema = objectType({
     slackBotToken: stringType().optional(),
 });
 function loadConfig() {
+    const posthogProjectId = input('posthog-project-id', 'POSTHOG_PROJECT_ID');
+    console.log(`[autonomy-bot] debug: posthog-project-id input=${JSON.stringify(core.getInput('posthog-project-id'))}, env=${JSON.stringify(process.env.POSTHOG_PROJECT_ID)}, resolved=${JSON.stringify(posthogProjectId)}`);
     return configSchema.parse({
         anthropicApiKey: input('anthropic-api-key', 'ANTHROPIC_API_KEY'),
         model: input('model', 'ANTHROPIC_MODEL'),
