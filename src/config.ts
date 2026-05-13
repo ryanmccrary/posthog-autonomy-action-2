@@ -1,5 +1,19 @@
 import { z } from 'zod';
+import * as core from '@actions/core';
+import * as github from '@actions/github';
 import 'dotenv/config';
+
+/**
+ * Read a GitHub Actions input. Falls back to the given environment variable
+ * name so the action also works when invoked outside of Actions (e.g. locally
+ * with plain env vars).
+ */
+function input(actionInput: string, envFallback?: string): string | undefined {
+  const val = core.getInput(actionInput);
+  if (val !== '') return val;
+  if (envFallback) return process.env[envFallback];
+  return undefined;
+}
 
 const reviewerName = z.enum(['analytics', 'logs', 'errors', 'llm', 'flags']);
 export type ReviewerName = z.infer<typeof reviewerName>;
@@ -61,23 +75,23 @@ export type Config = z.infer<typeof configSchema>;
 
 export function loadConfig(): Config {
   return configSchema.parse({
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY,
-    model: process.env.ANTHROPIC_MODEL,
-    posthogHost: process.env.POSTHOG_HOST,
-    posthogPersonalApiKey: process.env.POSTHOG_PERSONAL_API_KEY,
-    posthogProjectId: process.env.POSTHOG_PROJECT_ID,
-    posthogMcpUrl: process.env.POSTHOG_MCP_URL,
-    posthogMcpToken: process.env.POSTHOG_MCP_TOKEN,
-    githubToken: process.env.GITHUB_TOKEN,
+    anthropicApiKey: input('anthropic-api-key', 'ANTHROPIC_API_KEY'),
+    model: input('model', 'ANTHROPIC_MODEL'),
+    posthogHost: input('posthog-host', 'POSTHOG_HOST'),
+    posthogPersonalApiKey: input('posthog-personal-api-key', 'POSTHOG_PERSONAL_API_KEY'),
+    posthogProjectId: input('posthog-project-id', 'POSTHOG_PROJECT_ID'),
+    posthogMcpUrl: input('posthog-mcp-url', 'POSTHOG_MCP_URL'),
+    posthogMcpToken: input('posthog-mcp-token', 'POSTHOG_MCP_TOKEN'),
+    githubToken: input('github-token', 'GITHUB_TOKEN'),
     githubRepository: process.env.GITHUB_REPOSITORY,
-    githubPrNumber: process.env.GITHUB_PR_NUMBER,
-    enabledReviewers: process.env.ENABLED_REVIEWERS,
-    createResources: process.env.CREATE_RESOURCES,
-    insightBudgetSmall: process.env.INSIGHT_BUDGET_SMALL,
-    insightBudgetLarge: process.env.INSIGHT_BUDGET_LARGE,
-    enableInlineSuggestions: process.env.ENABLE_INLINE_SUGGESTIONS,
-    suggestionConfidenceThreshold: process.env.SUGGESTION_CONFIDENCE_THRESHOLD,
-    suggestionMax: process.env.SUGGESTION_MAX,
-    slackBotToken: process.env.SLACK_BOT_TOKEN,
+    githubPrNumber: github.context.payload.pull_request?.number ?? process.env.GITHUB_PR_NUMBER,
+    enabledReviewers: input('enabled-reviewers', 'ENABLED_REVIEWERS'),
+    createResources: input('create-resources', 'CREATE_RESOURCES'),
+    insightBudgetSmall: input('insight-budget-small', 'INSIGHT_BUDGET_SMALL'),
+    insightBudgetLarge: input('insight-budget-large', 'INSIGHT_BUDGET_LARGE'),
+    enableInlineSuggestions: input('enable-inline-suggestions', 'ENABLE_INLINE_SUGGESTIONS'),
+    suggestionConfidenceThreshold: input('suggestion-confidence-threshold', 'SUGGESTION_CONFIDENCE_THRESHOLD'),
+    suggestionMax: input('suggestion-max', 'SUGGESTION_MAX'),
+    slackBotToken: input('slack-bot-token', 'SLACK_BOT_TOKEN'),
   });
 }
