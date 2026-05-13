@@ -42732,7 +42732,7 @@ const configSchema = objectType({
 });
 function loadConfig() {
     const posthogProjectId = input('posthog-project-id', 'POSTHOG_PROJECT_ID');
-    console.log(`[autonomy-bot] debug: posthog-project-id input=${JSON.stringify(core.getInput('posthog-project-id'))}, env=${JSON.stringify(process.env.POSTHOG_PROJECT_ID)}, resolved=${JSON.stringify(posthogProjectId)}`);
+    console.log(`[autonomy-bot] debug: posthog-project-id input=${JSON.stringify(core.getInput('posthog-project-id'))}, env=${JSON.stringify(process.env.POSTHOG_PROJECT_ID)}, INPUT_POSTHOG-PROJECT-ID=${JSON.stringify(process.env['INPUT_POSTHOG-PROJECT-ID'])}, INPUT_POSTHOG_PROJECT_ID=${JSON.stringify(process.env['INPUT_POSTHOG_PROJECT_ID'])}, resolved=${JSON.stringify(posthogProjectId)}`);
     return configSchema.parse({
         anthropicApiKey: input('anthropic-api-key', 'ANTHROPIC_API_KEY'),
         model: input('model', 'ANTHROPIC_MODEL'),
