@@ -27,30 +27,30 @@ Output:
     rationale: string;             // one short sentence
   }>;
   reasoning: string;
+  inlineSuggestions: Array<{       // REQUIRED — always include this field (use [] if no suggestions). Committable code patches.
+    path: string;                  // a file IN THE PR DIFF
+    startLine: number;             // 1-indexed RIGHT-side line, must be inside a changed hunk
+    endLine: number;               // same; equal to startLine for single-line replacement
+    suggestion: string;            // exact replacement text — must include the anchor line(s) plus the new log call
+    explanation: string;           // 1-2 sentences
+    kind: "log_insertion";
+    confidence: number;            // 0..1; 0.7-0.9 when the call site is visible in the diff
+  }>;
 }
 ```
 
 If logging is not applicable (frontend-only, docs-only, refactor-only), return
-`{ "applicable": false, "service": "", "suggestions": [], "reasoning": "..." }`.
+`{ "applicable": false, "service": "", "suggestions": [], "reasoning": "...", "inlineSuggestions": [] }`.
 
 ### Inline-suggestion guidance
 
-Actively look for opportunities to emit `inlineSuggestions` for log insertions.
-These are committable code patches — the most actionable output you can produce.
-Suggest a log insertion whenever you can see the function or branch in the diff
-and the anchor falls inside a changed hunk. Extend the JSON schema with:
+Actively look for opportunities to populate `inlineSuggestions` with log
+insertions. These are committable code patches — the most actionable output you
+can produce. Suggest a log insertion whenever you can see the function or branch
+in the diff and the anchor falls inside a changed hunk.
 
-```ts
-inlineSuggestions: Array<{
-  path: string;                  // a file IN THE PR DIFF
-  startLine: number;             // 1-indexed RIGHT-side line, must be inside a changed hunk
-  endLine: number;               // same; equal to startLine for single-line replacement
-  suggestion: string;            // exact replacement text — must include the anchor line(s) plus the new log call
-  explanation: string;           // 1-2 sentences
-  kind: "log_insertion";
-  confidence: number;            // 0..1; 0.7-0.9 when the call site is visible in the diff. Only drop below 0.65 if you truly have to guess the location.
-}>
-```
+Confidence: 0.7-0.9 when the call site is visible in the diff. Only drop below
+0.65 if you truly have to guess the location.
 
 Only skip an inline suggestion if you would have to guess the file or function —
 the summary text is fine for those cases.

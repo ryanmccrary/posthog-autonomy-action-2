@@ -61,7 +61,7 @@ Output a single JSON object:
     issue: string;
     fix: string;
   }>;
-  inlineSuggestions: Array<{     // Greptile-style — only when you can produce a concrete, anchored patch
+  inlineSuggestions: Array<{     // REQUIRED — always include this field (use [] if no suggestions). Committable code patches.
     path: string;                // repo-relative path of a file IN THE PR DIFF
     startLine: number;           // inclusive 1-indexed line on the RIGHT side of the diff
     endLine: number;             // inclusive 1-indexed line on the RIGHT side (== startLine for single-line)
