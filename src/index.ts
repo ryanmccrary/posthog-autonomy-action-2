@@ -116,6 +116,7 @@ async function main(): Promise<void> {
   // a Greptile-style review-comment with a `suggestion` block; the rest get
   // dropped or fall back to the summary comment per reviewer's own markdown.
   const allSuggestions: InlineSuggestion[] = outputs.flatMap((o) => o.inlineSuggestions);
+  console.log(`[autonomy-bot] Inline suggestions: ${allSuggestions.length} raw from reviewers`);
   let inlineReport = { posted: 0, dropped: 0, rejections: [] as Array<{ kind: string; reason: string }> };
 
   if (config.enableInlineSuggestions && allSuggestions.length > 0) {
@@ -132,6 +133,11 @@ async function main(): Promise<void> {
     inlineReport.rejections = validated
       .filter((v) => !v.valid)
       .map((v) => ({ kind: v.kind, reason: v.rejection ?? 'unknown' }));
+
+    console.log(`[autonomy-bot] Inline suggestions: ${toPost.length} valid, ${inlineReport.dropped} dropped`);
+    for (const r of inlineReport.rejections) {
+      console.log(`[autonomy-bot]   dropped: ${r.kind} — ${r.reason}`);
+    }
 
     if (toPost.length > 0) {
       console.log(`[autonomy-bot] Posting ${toPost.length} inline suggestion(s)`);

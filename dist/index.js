@@ -42731,8 +42731,6 @@ const configSchema = objectType({
     slackBotToken: stringType().optional(),
 });
 function loadConfig() {
-    const posthogProjectId = input('posthog-project-id', 'POSTHOG_PROJECT_ID');
-    console.log(`[autonomy-bot] debug: posthog-project-id input=${JSON.stringify(core.getInput('posthog-project-id'))}, env=${JSON.stringify(process.env.POSTHOG_PROJECT_ID)}, INPUT_POSTHOG-PROJECT-ID=${JSON.stringify(process.env['INPUT_POSTHOG-PROJECT-ID'])}, INPUT_POSTHOG_PROJECT_ID=${JSON.stringify(process.env['INPUT_POSTHOG_PROJECT_ID'])}, resolved=${JSON.stringify(posthogProjectId)}`);
     return configSchema.parse({
         anthropicApiKey: input('anthropic-api-key', 'ANTHROPIC_API_KEY'),
         model: input('model', 'ANTHROPIC_MODEL'),
@@ -51811,12 +51809,12 @@ function makePlanKey(args) {
 
 
 async function runAnalyticsReviewer(args) {
-    const { claude, github, posthog, pr, summary, productMix, priorState, newState } = args;
-    if (!productMix.enabled.product_analytics || !summary.relevantProducts.includes('product_analytics')) {
+    const { claude, github, posthog, pr, summary, priorState, newState } = args;
+    if (!summary.relevantProducts.includes('product_analytics')) {
         return {
             reviewer: 'analytics',
             applicable: false,
-            summary: 'product_analytics not enabled OR not deemed relevant by semantic summary',
+            summary: 'product_analytics not deemed relevant by semantic summary',
             markdown: '',
             createdResources: [],
             inlineSuggestions: [],
@@ -52174,15 +52172,12 @@ const SPECS = {
 };
 async function runInstrumentationReviewer(args) {
     const spec = SPECS[args.kind];
-    const enabled = args.productMix.enabled[spec.product];
     const relevant = args.summary.relevantProducts.includes(spec.product);
-    if (!enabled || !relevant) {
+    if (!relevant) {
         return {
             reviewer: spec.name,
             applicable: false,
-            summary: !enabled
-                ? `${spec.product} not enabled on the project`
-                : `${spec.product} not deemed relevant for this PR`,
+            summary: `${spec.product} not deemed relevant for this PR`,
             markdown: '',
             createdResources: [],
             inlineSuggestions: [],
@@ -52272,12 +52267,12 @@ async function runInstrumentationReviewer(args) {
  * and sets `userApprovedFlagCreation` before invoking this reviewer.
  */
 async function runFlagsReviewer(args) {
-    const { claude, posthog, pr, summary, productMix, priorState, newState } = args;
-    if (!productMix.enabled.feature_flags) {
+    const { claude, posthog, pr, summary, priorState, newState } = args;
+    if (!summary.relevantProducts.includes('feature_flags')) {
         return {
             reviewer: 'flags',
             applicable: false,
-            summary: 'feature_flags not enabled',
+            summary: 'feature_flags not deemed relevant by semantic summary',
             markdown: '',
             createdResources: [],
             inlineSuggestions: [],
@@ -52496,7 +52491,7 @@ function renderFinalComment(args) {
     lines.push(`<sub>Enabled PostHog products on this project: ${enabledList || '_none detected_'}</sub>`);
     lines.push('');
     if (applicable.length === 0) {
-        lines.push('_No instrumentation suggestions for this PR. The feature summary suggests none of the enabled PostHog products are relevant._');
+        lines.push('_No instrumentation suggestions for this PR. The feature summary suggests none of the PostHog products are relevant to the changes in this diff._');
     }
     if (inlineReport && inlineReport.posted > 0) {
         lines.push(`> ✨ Posted **${inlineReport.posted}** inline suggestion${inlineReport.posted === 1 ? '' : 's'} as a review on the **Files changed** tab. Click "Apply suggestion" to commit any of them.`);
@@ -52766,6 +52761,7 @@ async function main() {
     // a Greptile-style review-comment with a `suggestion` block; the rest get
     // dropped or fall back to the summary comment per reviewer's own markdown.
     const allSuggestions = outputs.flatMap((o) => o.inlineSuggestions);
+    console.log(`[autonomy-bot] Inline suggestions: ${allSuggestions.length} raw from reviewers`);
     let inlineReport = { posted: 0, dropped: 0, rejections: [] };
     if (config.enableInlineSuggestions && allSuggestions.length > 0) {
         const alreadyPosted = new Set(priorState.postedSuggestions ?? []);
@@ -52780,6 +52776,10 @@ async function main() {
         inlineReport.rejections = validated
             .filter((v) => !v.valid)
             .map((v) => ({ kind: v.kind, reason: v.rejection ?? 'unknown' }));
+        console.log(`[autonomy-bot] Inline suggestions: ${toPost.length} valid, ${inlineReport.dropped} dropped`);
+        for (const r of inlineReport.rejections) {
+            console.log(`[autonomy-bot]   dropped: ${r.kind} — ${r.reason}`);
+        }
         if (toPost.length > 0) {
             console.log(`[autonomy-bot] Posting ${toPost.length} inline suggestion(s)`);
             const reviewBody = `🦔 **PostHog PR Autonomy Bot** — ${toPost.length} inline suggestion${toPost.length === 1 ? '' : 's'} below. See the top-level comment for the full review.`;

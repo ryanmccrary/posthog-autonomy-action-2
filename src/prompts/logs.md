@@ -35,10 +35,10 @@ If logging is not applicable (frontend-only, docs-only, refactor-only), return
 
 ### Inline-suggestion guidance
 
-You may additionally emit Greptile-style `inlineSuggestions` for log
-insertions, but ONLY when the call site is unambiguous (you can see the
-function/branch in the diff and the surrounding context). Extend the JSON
-schema with:
+Actively look for opportunities to emit `inlineSuggestions` for log insertions.
+These are committable code patches — the most actionable output you can produce.
+Suggest a log insertion whenever you can see the function or branch in the diff
+and the anchor falls inside a changed hunk. Extend the JSON schema with:
 
 ```ts
 inlineSuggestions: Array<{
@@ -48,11 +48,11 @@ inlineSuggestions: Array<{
   suggestion: string;            // exact replacement text — must include the anchor line(s) plus the new log call
   explanation: string;           // 1-2 sentences
   kind: "log_insertion";
-  confidence: number;            // 0..1; <0.6 will be dropped to summary
+  confidence: number;            // 0..1; 0.7-0.9 when the call site is visible in the diff. Only drop below 0.65 if you truly have to guess the location.
 }>
 ```
 
-Skip inline suggestions for logs the bot would only "place somewhere
-reasonable" — the summary text is fine for those.
+Only skip an inline suggestion if you would have to guess the file or function —
+the summary text is fine for those cases.
 
 Output ONLY the JSON object — no commentary, no fences.

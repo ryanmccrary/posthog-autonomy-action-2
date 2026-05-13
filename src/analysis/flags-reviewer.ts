@@ -44,13 +44,13 @@ export async function runFlagsReviewer(args: {
   priorState: ReviewState;
   newState: ReviewState;
 }): Promise<ReviewerOutput> {
-  const { claude, posthog, pr, summary, productMix, priorState, newState } = args;
+  const { claude, posthog, pr, summary, priorState, newState } = args;
 
-  if (!productMix.enabled.feature_flags) {
+  if (!summary.relevantProducts.includes('feature_flags')) {
     return {
       reviewer: 'flags',
       applicable: false,
-      summary: 'feature_flags not enabled',
+      summary: 'feature_flags not deemed relevant by semantic summary',
       markdown: '',
       createdResources: [],
       inlineSuggestions: [],

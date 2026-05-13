@@ -59,8 +59,10 @@ Output a single JSON object:
 
 ### Inline-suggestion guidance for flags
 
-Emit inline suggestions ONLY when you can see the EXACT line(s) to change in
-the diff. Three sub-kinds:
+Actively look for opportunities to emit inline suggestions — these committable
+patches are the most actionable output. Produce a suggestion whenever you can
+see the relevant line(s) in the diff and the anchor falls inside a changed hunk.
+Three sub-kinds:
 
 - `flag_constant_register` — when a `constants` file is visible in the diff
   and you can append a new flag key to its list. Anchor on the existing

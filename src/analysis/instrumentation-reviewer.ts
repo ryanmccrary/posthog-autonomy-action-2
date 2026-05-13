@@ -86,16 +86,13 @@ export async function runInstrumentationReviewer(args: {
   productMix: CustomerProductMix;
 }): Promise<ReviewerOutput> {
   const spec = SPECS[args.kind];
-  const enabled = args.productMix.enabled[spec.product];
   const relevant = args.summary.relevantProducts.includes(spec.product);
 
-  if (!enabled || !relevant) {
+  if (!relevant) {
     return {
       reviewer: spec.name,
       applicable: false,
-      summary: !enabled
-        ? `${spec.product} not enabled on the project`
-        : `${spec.product} not deemed relevant for this PR`,
+      summary: `${spec.product} not deemed relevant for this PR`,
       markdown: '',
       createdResources: [],
       inlineSuggestions: [],

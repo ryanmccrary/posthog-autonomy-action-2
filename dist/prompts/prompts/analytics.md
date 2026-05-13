@@ -75,19 +75,21 @@ Output a single JSON object:
 
 ### Inline-suggestion guidance
 
-Emit `inlineSuggestions` ONLY when ALL of these hold:
-1. The change is small and mechanical (e.g. add one property to an existing capture call, or insert a single `posthog.capture(...)` line at a clearly-correct spot).
-2. The anchor (startLine..endLine) is inside a **changed hunk** of the diff. You can see the hunk's right-side line numbers in the `+lineNumber` markers within the diff.
-3. The suggestion text is valid in the file's language (Python, TypeScript, etc.) — the user clicks "Apply suggestion" and it should compile/run.
+Actively look for opportunities to emit `inlineSuggestions`. These are committable
+code patches that the developer can apply with one click — they are the most
+valuable output of this reviewer. Produce a suggestion whenever:
+
+1. The anchor (startLine..endLine) is inside a **changed hunk** of the diff (GitHub API constraint — this is mandatory).
+2. The suggestion text is valid in the file's language (Python, TypeScript, Ruby, etc.) — the user clicks "Apply suggestion" and it should compile/run.
 
 For `extend_existing_capture`:
 - Find an EXISTING `posthog.capture('event_name', { ... })` in the diff that fires from the new code path.
 - Replace those lines with the same call plus the new property. Confidence 0.7-0.95 is normal here.
 
 For `new_capture`:
-- Only emit if there's an existing capture call nearby (sibling event in the same function) or if the call site is obvious from the diff structure.
-- Anchor on a single line that ends the relevant block; the suggestion includes that line PLUS the new capture line below.
-- Be conservative — confidence 0.6-0.8. If you have to guess where to put it, set confidence < 0.6 (it will be dropped to summary).
+- If the diff contains a controller action, API handler, form submission handler, or similar entry point that lacks a `posthog.capture(...)` call, suggest inserting one. This is the most common opportunity — look for it proactively.
+- Anchor on a line inside the changed hunk that ends the relevant block; the suggestion includes that line PLUS the new capture line.
+- Confidence 0.7-0.9 when the call site is clear from the diff. Only drop below 0.65 if you truly have to guess the location.
 
 Always also include the suggestion's event in `events` so the summary stays complete.
 

@@ -59,13 +59,13 @@ export async function runAnalyticsReviewer(args: {
   /** Mutated by this reviewer to record what was created / updated this run. */
   newState: ReviewState;
 }): Promise<ReviewerOutput> {
-  const { claude, github, posthog, pr, summary, productMix, priorState, newState } = args;
+  const { claude, github, posthog, pr, summary, priorState, newState } = args;
 
-  if (!productMix.enabled.product_analytics || !summary.relevantProducts.includes('product_analytics')) {
+  if (!summary.relevantProducts.includes('product_analytics')) {
     return {
       reviewer: 'analytics',
       applicable: false,
-      summary: 'product_analytics not enabled OR not deemed relevant by semantic summary',
+      summary: 'product_analytics not deemed relevant by semantic summary',
       markdown: '',
       createdResources: [],
       inlineSuggestions: [],
