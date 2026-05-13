@@ -1,0 +1,70 @@
+name: 'PostHog PR Autonomy Bot'
+description: 'Proactively suggests and creates missing PostHog instrumentation for new features in a PR.'
+author: 'PostHog'
+branding:
+  icon: 'activity'
+  color: 'orange'
+
+inputs:
+  github-token:
+    description: 'GITHUB_TOKEN with pull-request: write'
+    required: true
+  anthropic-api-key:
+    description: 'Anthropic API key used for semantic PR analysis.'
+    required: true
+  posthog-personal-api-key:
+    description: 'PostHog personal API key with project access (read events, write insights/dashboards/flags).'
+    required: true
+  posthog-host:
+    description: 'PostHog host (e.g. https://us.posthog.com, https://eu.posthog.com, or self-hosted).'
+    required: false
+    default: 'https://us.posthog.com'
+  posthog-project-id:
+    description: 'Numeric PostHog project (team) id to scope reviews against.'
+    required: true
+  posthog-mcp-url:
+    description: 'PostHog MCP JSON-RPC endpoint. Default: https://mcp.posthog.com/mcp. Set empty to disable MCP and use REST only.'
+    required: false
+    default: 'https://mcp.posthog.com/mcp'
+  posthog-mcp-token:
+    description: 'Optional separate token for the MCP endpoint. Defaults to posthog-personal-api-key.'
+    required: false
+  enabled-reviewers:
+    description: 'Comma-separated list of reviewers to run. One of: analytics, logs, errors, llm, flags.'
+    required: false
+    default: 'analytics,logs,errors,llm,flags'
+  create-resources:
+    description: 'If true, proactively create insights / dashboards. If false, suggest only.'
+    required: false
+    default: 'true'
+  insight-budget-small:
+    description: 'Max insights to create for a "small" feature.'
+    required: false
+    default: '3'
+  insight-budget-large:
+    description: 'Max insights to create for a "large" feature.'
+    required: false
+    default: '5'
+  enable-inline-suggestions:
+    description: 'When true, post Greptile-style line-anchored suggestion blocks for mechanical changes (new/extended events, log inserts, error captures, LLM wraps, flag register/gate sites).'
+    required: false
+    default: 'true'
+  suggestion-confidence-threshold:
+    description: 'Minimum bot-self-rated confidence (0..1) for a suggestion to be posted inline. Lower-confidence ones fall back to the summary comment.'
+    required: false
+    default: '0.65'
+  suggestion-max:
+    description: 'Cap on inline suggestions posted in a single review.'
+    required: false
+    default: '12'
+  slack-bot-token:
+    description: 'Optional Slack bot token used to offer a follow-up notification with results.'
+    required: false
+  model:
+    description: 'Anthropic model id.'
+    required: false
+    default: 'claude-opus-4-7'
+
+runs:
+  using: 'node20'
+  main: 'dist/index.js'

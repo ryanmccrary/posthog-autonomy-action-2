@@ -1,0 +1,18 @@
+{
+  "owner": "PostHog",
+  "repo": "posthog",
+  "number": 54115,
+  "title": "feat(workflows): allow scheduled workflows",
+  "body": "Adds the ability to schedule workflows on a cron-like recurrence. New trigger type `schedule` joins `event` and `batch`. UI exposes a schedule picker; backend persists the recurrence on `HogFlow` and a worker fans the workflow out at each fire.",
+  "baseSha": "abc123",
+  "headSha": "def456",
+  "author": "abheek",
+  "url": "https://github.com/PostHog/posthog/pull/54115",
+  "changedFiles": [
+    { "path": "posthog/hogql_queries/hog_flow_query_runner.py", "status": "modified", "additions": 38, "deletions": 4, "patch": "@@ -10,6 +10,18 @@\n class HogFlowQueryRunner:\n     def run(self, flow):\n+        if flow.trigger_type == 'schedule':\n+            return self._run_scheduled(flow)\n         if flow.trigger_type == 'batch':\n             return self._run_batch(flow)\n         return self._run_event(flow)\n+\n+    def _run_scheduled(self, flow):\n+        # Resolve the next fire time and enqueue\n+        next_fire = compute_next_fire(flow.schedule)\n+        enqueue_workflow_run(flow.id, when=next_fire)" },
+    { "path": "frontend/src/scenes/hog-flows/HogFlowSchedulePicker.tsx", "status": "added", "additions": 84, "deletions": 0, "patch": "@@ -0,0 +1,84 @@\n+export function HogFlowSchedulePicker({ value, onChange }) {\n+  return (\n+    <LemonField name=\"schedule\">\n+      <CronInput value={value} onChange={onChange} />\n+    </LemonField>\n+  )\n+}\n+\n+// fires hog_flow_created when the user persists the new flow\n+// posthog.capture('hog_flow_created', { trigger_type: 'schedule' })" },
+    { "path": "frontend/src/scenes/hog-flows/HogFlowTriggerSelector.tsx", "status": "modified", "additions": 12, "deletions": 2, "patch": "@@ -3,8 +3,14 @@\n const TRIGGER_TYPES = [\n   { value: 'event', label: 'On event' },\n   { value: 'batch', label: 'On batch' },\n+  { value: 'schedule', label: 'On a schedule' },\n ]" },
+    { "path": "posthog/models/hog_flow.py", "status": "modified", "additions": 22, "deletions": 0, "patch": "@@ -45,3 +45,25 @@\n class HogFlow(models.Model):\n     trigger_type = models.CharField(\n         choices=[('event', 'Event'), ('batch', 'Batch'), ('schedule', 'Schedule')],\n     )\n+    schedule = models.JSONField(null=True, blank=True)\n+\n+    def is_scheduled(self) -> bool:\n+        return self.trigger_type == 'schedule'" }
+  ],
+  "unifiedDiff": "(see changedFiles[].patch — used directly by the fixture runner)"
+}
