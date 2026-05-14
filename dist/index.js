@@ -51373,13 +51373,13 @@ class PostHogClient {
         const flags = await this.safe(() => this.viaMcp('feature-flag-get-all', { limit: 1 }), () => this.rest.fetchJson(`/api/projects/${this.projectId}/feature_flags/?limit=1`), null);
         enabled.feature_flags = flags !== null;
         // Error tracking
-        const issues = await this.safe(() => this.viaMcp('query-error-tracking-issues-list', { limit: 1 }), () => this.rest.fetchJson(`/api/projects/${this.projectId}/error_tracking/issues/?limit=1`), null);
+        const issues = await this.safe(() => this.viaMcp('query-error-tracking-issues-list', { limit: 1 }), () => this.rest.fetchJson(`/api/environments/${this.projectId}/error_tracking/issues/?limit=1`), null);
         enabled.error_tracking = issues !== null;
         // LLM analytics — presence of $ai_generation event def
         const llm = await this.safe(() => this.viaMcp('event-definition-list', { search: '$ai_generation', limit: 1 }), () => this.rest.fetchJson(`/api/projects/${this.projectId}/event_definitions/?search=%24ai_generation&limit=1`), { results: [] });
         enabled.llm_analytics = llm.results?.some((e) => e.name === '$ai_generation') ?? false;
-        // Logs — best-effort
-        const logs = await this.safe(() => this.viaMcp('logs-count', { limit: 1 }), () => this.rest.fetchJson(`/api/environments/${this.projectId}/logs/?limit=1`), null);
+        // Logs — best-effort (probe the attributes endpoint which is a simple GET)
+        const logs = await this.safe(() => this.viaMcp('logs-count', { limit: 1 }), () => this.rest.fetchJson(`/api/environments/${this.projectId}/logs/attributes/`), null);
         enabled.logs = logs !== null;
         // Session replay
         const replays = await this.safe(() => null, // No PostHog MCP tool for listing recordings (read-only API).
