@@ -281,6 +281,28 @@ export class PostHogClient {
     );
   }
 
+  /**
+   * Dry-run a structured query against `/api/projects/:id/query/`. Used by
+   * the insight-service validator to catch malformed queries BEFORE we POST
+   * them as insights — invalid queries persisted as insights are noisy in
+   * the PostHog UI and require manual cleanup.
+   *
+   * Throws on non-2xx; the validator catches and converts into a structured
+   * `{ valid: false, error }` result. We don't need the query result itself,
+   * just the schema/runtime check.
+   *
+   * MCP equivalent: there's no first-party MCP tool that accepts arbitrary
+   * insight-shaped queries (the `query-trends`, `query-funnel`, etc. MCP
+   * tools take a more constrained shape) — REST is the right path here.
+   */
+  async runQuery(query: Record<string, unknown>): Promise<unknown> {
+    const body = { query };
+    return this.rest.fetchJson<unknown>(`/api/projects/${this.projectId}/query/`, {
+      method: 'POST',
+      body,
+    });
+  }
+
   /** MCP: create-feature-flag. Always creates DRAFT (inactive, 0% rollout). */
   async createDraftFeatureFlag(args: { key: string; name: string; description: string; prUrl: string }): Promise<CreatedResource> {
     const body = {

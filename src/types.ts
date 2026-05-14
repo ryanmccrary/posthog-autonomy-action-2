@@ -123,15 +123,51 @@ export interface FeatureFlagSuggestion {
   needsPermission: boolean;
 }
 
-export interface InsightPlan {
-  name: string;
+/**
+ * What the analytics LLM emits for each insight it wants the bot to create.
+ * Deliberately small: the model only describes what insight it wants in
+ * English; the NL → structured-query translation happens downstream in
+ * `src/insight-service/`. This split mirrors PostHog's Max AI tool, where
+ * the parent agent picks `insight_type` + `viz_*` and a typed sub-graph
+ * generates the actual query JSON.
+ */
+export interface InsightSpec {
   /**
-   * Stable kebab-case slug that uniquely identifies the purpose of the insight.
-   * Used to match this plan against a previously-created insight across re-runs.
+   * Stable kebab-case slug that uniquely identifies the purpose of the
+   * insight. Used to match this spec against a previously-created insight
+   * across re-runs (idempotency).
    */
   planKey: string;
+  /**
+   * Free-form English description of the insight to create. This is the
+   * input to `describeToInsight()`. Be specific about events, breakdown
+   * dimension, time range, and what question the insight answers.
+   */
   description: string;
-  type: 'trends' | 'funnels' | 'retention' | 'paths' | 'stickiness' | 'lifecycle';
+  /**
+   * Optional bias for the insight-service classifier. Set when the analytics
+   * reviewer has high confidence about the type (e.g. an ordered-events
+   * sequence is clearly a funnel). The classifier may override if the
+   * description contradicts the hint.
+   */
+  preferType?: 'trends' | 'funnel' | 'retention' | 'sql';
+  /** Optional dashboard name to attach this insight to. */
+  dashboardName?: string;
+}
+
+/**
+ * The fully-resolved insight ready to POST to PostHog. Built by the
+ * analytics reviewer after running each `InsightSpec` through
+ * `describeToInsight()`. The `query` is the structured PostHog query JSON
+ * produced by the typed generator; `name` and `description` come from the
+ * classifier's `viz_title` / `viz_description`.
+ */
+export interface InsightPlan {
+  name: string;
+  /** Same `planKey` as the originating `InsightSpec`. */
+  planKey: string;
+  description: string;
+  type: 'trends' | 'funnel' | 'retention' | 'sql';
   query: Record<string, unknown>;
   dashboardName?: string;
 }

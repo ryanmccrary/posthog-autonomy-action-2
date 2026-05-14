@@ -1840,7 +1840,7 @@ class ExecState extends events.EventEmitter {
 
 /***/ }),
 
-/***/ 1648:
+/***/ 9267:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 
@@ -1931,7 +1931,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getOctokit = exports.context = void 0;
-const Context = __importStar(__nccwpck_require__(1648));
+const Context = __importStar(__nccwpck_require__(9267));
 const utils_1 = __nccwpck_require__(8006);
 exports.context = new Context.Context();
 /**
@@ -2054,7 +2054,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getOctokitOptions = exports.GitHub = exports.defaults = exports.context = void 0;
-const Context = __importStar(__nccwpck_require__(1648));
+const Context = __importStar(__nccwpck_require__(9267));
 const Utils = __importStar(__nccwpck_require__(5156));
 // octokit + plugins
 const core_1 = __nccwpck_require__(1897);
@@ -51494,6 +51494,27 @@ class PostHogClient {
             body: { dashboards: [dashboardId] },
         }), null);
     }
+    /**
+     * Dry-run a structured query against `/api/projects/:id/query/`. Used by
+     * the insight-service validator to catch malformed queries BEFORE we POST
+     * them as insights — invalid queries persisted as insights are noisy in
+     * the PostHog UI and require manual cleanup.
+     *
+     * Throws on non-2xx; the validator catches and converts into a structured
+     * `{ valid: false, error }` result. We don't need the query result itself,
+     * just the schema/runtime check.
+     *
+     * MCP equivalent: there's no first-party MCP tool that accepts arbitrary
+     * insight-shaped queries (the `query-trends`, `query-funnel`, etc. MCP
+     * tools take a more constrained shape) — REST is the right path here.
+     */
+    async runQuery(query) {
+        const body = { query };
+        return this.rest.fetchJson(`/api/projects/${this.projectId}/query/`, {
+            method: 'POST',
+            body,
+        });
+    }
     /** MCP: create-feature-flag. Always creates DRAFT (inactive, 0% rollout). */
     async createDraftFeatureFlag(args) {
         const body = {
@@ -51716,6 +51737,222 @@ async function summarizeFeature(claude, pr) {
     };
 }
 
+;// CONCATENATED MODULE: ./src/insight-service/classifier.ts
+/**
+ * Step 1 of the NL → Insight pipeline: classify a free-form English insight
+ * description into the structured `CreateInsightArgs` shape that mirrors
+ * Max's `CreateInsightToolArgs` Pydantic class.
+ *
+ * The classifier produces:
+ *   - `insight_type`: which typed generator to dispatch to
+ *   - `viz_title` + `viz_description`: stable display text for the PostHog UI
+ *   - `query_description`: a refined, complete NL plan the typed generator
+ *     can execute against (often longer than the user's original description
+ *     because the classifier expands implicit defaults — date range,
+ *     interval, breakdown, math)
+ *
+ * One Claude call. Structured output via the existing claude.structured()
+ * helper; no MCP, no tool use.
+ */
+
+
+const VALID_TYPES = new Set(['trends', 'funnel', 'retention', 'sql']);
+async function classifyInsight(args) {
+    const system = await loadPrompt('insight-classifier.md');
+    const user = [
+        args.prefer_type ? `prefer_type=${args.prefer_type} (use unless description clearly contradicts)` : 'No prefer_type hint.',
+        '',
+        `Available events in the project (${args.events.length}):`,
+        args.events.length
+            ? args.events
+                .slice(0, 30)
+                .map((e) => `- ${e.name} (30d usage: ${e.queryUsage30d})` +
+                (e.properties.length
+                    ? `\n    properties: ${e.properties.map((p) => p.name).join(', ')}`
+                    : ''))
+                .join('\n')
+            : '(none — caller passed no event context)',
+        '',
+        'User description of the insight to create:',
+        args.description,
+    ].join('\n');
+    const { value } = await args.claude.structured({
+        system,
+        user,
+        maxTokens: 1500,
+    });
+    return normalise(value, args);
+}
+/**
+ * Defensive cleanup: enforce the type contract even if the model wandered.
+ * Strips markdown injection from the visible fields (defence-in-depth on top
+ * of the existing comment-renderer sanitisation), normalises insight_type to
+ * the valid Literal, and falls back to `sql` if the model picked something
+ * we don't have a generator for.
+ */
+function normalise(raw, fallback) {
+    const type = VALID_TYPES.has(raw.insight_type)
+        ? raw.insight_type
+        : fallback.prefer_type && VALID_TYPES.has(fallback.prefer_type)
+            ? fallback.prefer_type
+            : 'sql';
+    return {
+        insight_type: type,
+        viz_title: stripUntrustedMarkdown(raw.viz_title || fallback.description.slice(0, 60)),
+        viz_description: stripUntrustedMarkdown(raw.viz_description || fallback.description),
+        query_description: stripUntrustedMarkdown(raw.query_description || fallback.description),
+    };
+}
+
+;// CONCATENATED MODULE: ./src/insight-service/generators/index.ts
+/**
+ * Step 2 of the NL → Insight pipeline: turn a `CreateInsightArgs` into a
+ * concrete PostHog query JSON object.
+ *
+ * Mirrors Max's typed sub-graphs (`add_trends_generator`, `add_funnel_generator`,
+ * `add_retention_generator`, `add_sql_generator`) — same one-prompt-per-type
+ * shape, but in a single file because the per-type code is identical except
+ * for the prompt and the expected `kind` discriminator. If a generator grows
+ * type-specific post-processing (e.g. "rewrite event names that aren't in the
+ * project's schema"), split it into its own file then.
+ */
+
+const GENERATORS = {
+    trends: { promptFile: 'insight-trends.md', expectedKind: 'TrendsQuery' },
+    funnel: { promptFile: 'insight-funnel.md', expectedKind: 'FunnelsQuery' },
+    retention: { promptFile: 'insight-retention.md', expectedKind: 'RetentionQuery' },
+    sql: { promptFile: 'insight-sql.md', expectedKind: 'HogQLQuery' },
+};
+async function generateQuery(args) {
+    const spec = GENERATORS[args.args.insight_type];
+    const system = await loadPrompt(spec.promptFile);
+    const user = [
+        `Insight type: ${args.args.insight_type}`,
+        `Visualization title: ${args.args.viz_title}`,
+        `Visualization description: ${args.args.viz_description}`,
+        '',
+        'Plan to execute (`query_description`):',
+        args.args.query_description,
+        '',
+        `Available events in the project (${args.events.length}):`,
+        args.events.length
+            ? args.events
+                .slice(0, 30)
+                .map((e) => `- ${e.name}` +
+                (e.properties.length
+                    ? `\n    properties: ${e.properties.map((p) => p.name).join(', ')}`
+                    : ''))
+                .join('\n')
+            : '(none — generator must work without event grounding; prefer "sql" if this happens at runtime)',
+    ].join('\n');
+    const { value } = await args.claude.structured({
+        system,
+        user,
+        maxTokens: 2000,
+    });
+    return enforceKind(value, spec.expectedKind);
+}
+/**
+ * Defensive: if the model emitted the wrong `kind` discriminator (or no kind
+ * at all), patch it to the expected one. The PostHog API rejects payloads
+ * with mismatched `kind` so getting this wrong loses the whole insight.
+ */
+function enforceKind(query, expected) {
+    if (!query || typeof query !== 'object') {
+        throw new Error(`Generator returned non-object query (expected kind ${expected})`);
+    }
+    if (query.kind !== expected) {
+        return { ...query, kind: expected };
+    }
+    return query;
+}
+
+;// CONCATENATED MODULE: ./src/insight-service/validator.ts
+/**
+ * Step 3 of the NL → Insight pipeline: dry-run the generated structured
+ * query against PostHog before persisting it as an insight.
+ *
+ * Mirrors what Max's InsightsGraph does after the typed generator runs (it
+ * passes the output through a `query_executor` node that catches schema /
+ * runtime errors before the insight reaches the user).
+ *
+ * We POST to `/api/projects/:id/query/`, which executes the query and
+ * returns either the result or a structured error. We don't care about the
+ * result here — we only want to know "does this query parse and run."
+ *
+ * The validator never throws on an invalid query: it returns
+ * `{ valid: false, error }` so the caller can decide whether to skip the
+ * insight or fall back to a simpler shape.
+ */
+async function validateQuery(args) {
+    try {
+        await args.posthog.runQuery(args.query);
+        return { valid: true };
+    }
+    catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return { valid: false, error: message.slice(0, 500) };
+    }
+}
+
+;// CONCATENATED MODULE: ./src/insight-service/index.ts
+/**
+ * Public entry point for the NL → PostHog Insight pipeline.
+ *
+ * Today this lives inside the bot. Tomorrow we'll likely point at an
+ * external Max-as-a-service endpoint instead — at which point only this
+ * file's implementation changes; every caller's contract stays the same.
+ *
+ * The pipeline:
+ *
+ *   1. **Classify** — one Claude call. Free-form English description +
+ *      events list → `CreateInsightArgs` (insight_type / viz_title /
+ *      viz_description / refined query_description). Mirrors Max's parent
+ *      agent picking which typed sub-graph to dispatch to.
+ *   2. **Generate** — one Claude call against a typed prompt
+ *      (`insight-{trends,funnel,retention,sql}.md`) → structured PostHog
+ *      query JSON. Mirrors Max's typed sub-graph generator nodes
+ *      (`add_trends_generator` / `add_funnel_generator` / etc.).
+ *   3. **Validate** — POST to `/api/projects/:id/query/`. If the dry-run
+ *      fails, return the result with `validated: false` so the caller can
+ *      decide whether to skip persisting the insight. Mirrors Max's
+ *      `query_executor` node catching schema errors before the artifact
+ *      reaches the user.
+ *
+ * Failure handling: each step is best-effort. The classifier and generator
+ * are required (they throw on Claude API errors); the validator is
+ * advisory (returns `validated: false` rather than throwing). This way a
+ * brief PostHog-side 500 doesn't sink the whole reviewer run.
+ */
+
+
+
+async function describeToInsight(args) {
+    const { claude, posthog, events, description, prefer_type, validate = true } = args;
+    // Step 1 — classify NL → CreateInsightArgs
+    const plan = await classifyInsight({ claude, events, description, prefer_type });
+    // Step 2 — generate the structured query JSON for the chosen type
+    const query = await generateQuery({ claude, events, args: plan });
+    // Step 3 — validate (optional). On failure we still return the query so
+    // the caller can either log + skip or persist anyway with a warning.
+    let validated = false;
+    let validation_error;
+    if (validate) {
+        const outcome = await validateQuery({ posthog, query });
+        validated = outcome.valid;
+        validation_error = outcome.error;
+    }
+    return {
+        query,
+        insight_type: plan.insight_type,
+        viz_title: plan.viz_title,
+        viz_description: plan.viz_description,
+        query_description: plan.query_description,
+        validated,
+        validation_error,
+    };
+}
+
 // EXTERNAL MODULE: external "node:crypto"
 var external_node_crypto_ = __nccwpck_require__(7598);
 ;// CONCATENATED MODULE: ./src/state.ts
@@ -51810,6 +52047,7 @@ function makePlanKey(args) {
 
 
 
+
 async function runAnalyticsReviewer(args) {
     const { claude, github, posthog, pr, summary, productMix, priorState, newState } = args;
     if (!productMix.enabled.product_analytics || !summary.relevantProducts.includes('product_analytics')) {
@@ -51852,8 +52090,9 @@ async function runAnalyticsReviewer(args) {
     });
     // Security (audit Finding 1): scrub markdown image/HTML/script injection
     // from every model-emitted prose field before we render or POST it. The
-    // insight `query` JSON and the inline `suggestion` body are intentionally
-    // NOT touched here — those are structured data / code, handled elsewhere.
+    // insight-service output (structured PostHog query JSON) and the inline
+    // `suggestion` body are intentionally NOT touched here — those are
+    // structured data / code, handled elsewhere.
     plan.reasoning = stripUntrustedMarkdown(plan.reasoning);
     for (const e of plan.events) {
         e.trigger = stripUntrustedMarkdown(e.trigger);
@@ -51862,7 +52101,9 @@ async function runAnalyticsReviewer(args) {
         }
     }
     for (const i of plan.insights) {
-        i.name = stripUntrustedMarkdown(i.name);
+        // InsightSpec only carries the NL `description`; the classifier produces
+        // viz_title / viz_description, which the insight-service runs through
+        // its own sanitiser.
         i.description = stripUntrustedMarkdown(i.description);
     }
     for (const v of plan.schemaViolations ?? []) {
@@ -51874,7 +52115,8 @@ async function runAnalyticsReviewer(args) {
             s.explanation = stripUntrustedMarkdown(s.explanation);
         }
     }
-    // 5. Resolve insights: create vs update vs leave alone.
+    // 5. Resolve insights: classifier + typed generator + validator (the
+    //    NL → structured-query pipeline), THEN create vs update vs leave-alone.
     const resolved = [];
     const obsoletePrior = [];
     if (args.createResources && plan.insights.length > 0) {
@@ -51893,7 +52135,6 @@ async function runAnalyticsReviewer(args) {
             const dashName = plan.insights[0]?.dashboardName ?? defaultDashboardName(summary);
             try {
                 if (prevDash) {
-                    // Reuse the existing dashboard — we never auto-rename/update dashboards.
                     dashboardResource = {
                         kind: 'dashboard',
                         id: prevDash.id,
@@ -51911,34 +52152,85 @@ async function runAnalyticsReviewer(args) {
                 console.warn('[analytics] Failed to create/reuse dashboard:', err);
             }
         }
-        for (const insight of plan.insights.slice(0, insightBudget)) {
-            const key = insight.planKey || makePlanKey({ surface: summary.surfaces[0], name: insight.name });
-            insight.planKey = key;
-            const newHash = hashQuery(insight.query);
+        for (const spec of plan.insights.slice(0, insightBudget)) {
+            const key = spec.planKey || makePlanKey({ surface: summary.surfaces[0], name: spec.description });
+            spec.planKey = key;
+            // NL → structured-query pipeline. One classifier call + one typed
+            // generator call + an optional validator dry-run. The reviewer is no
+            // longer responsible for picking insight types or hand-crafting query
+            // JSON — that lives in src/insight-service/.
+            let insightPlan;
+            let validated = false;
+            let validationError;
+            try {
+                const result = await describeToInsight({
+                    claude,
+                    posthog,
+                    events: existingEvents,
+                    description: spec.description,
+                    prefer_type: spec.preferType,
+                    validate: true,
+                });
+                validated = result.validated;
+                validationError = result.validation_error;
+                if (!validated) {
+                    console.warn(`[analytics] Insight "${spec.description.slice(0, 60)}" failed validator: ${validationError}`);
+                }
+                insightPlan = {
+                    name: result.viz_title,
+                    planKey: key,
+                    description: result.viz_description,
+                    type: result.insight_type,
+                    query: result.query,
+                    dashboardName: spec.dashboardName,
+                };
+            }
+            catch (err) {
+                console.warn(`[analytics] describeToInsight failed for spec "${spec.description.slice(0, 60)}":`, err);
+                continue;
+            }
+            // If the dry-run failed and we're not creating an insight with a
+            // known-bad query, skip persistence — surface in the comment so the
+            // reviewer can iterate on the description.
+            if (!validated) {
+                resolved.push({
+                    plan: insightPlan,
+                    resource: {
+                        kind: 'insight',
+                        id: 0,
+                        name: insightPlan.name,
+                        url: '(not created — validator failed)',
+                    },
+                    newHash: hashQuery(insightPlan.query),
+                    action: 'created',
+                    validated: false,
+                    validationError,
+                });
+                continue;
+            }
+            const newHash = hashQuery(insightPlan.query);
             const prev = prevByKey.get(key);
             try {
                 if (prev && prev.queryHash === newHash) {
-                    // Unchanged — leave as is, just re-link in the comment.
                     resolved.push({
-                        plan: insight,
+                        plan: insightPlan,
                         resource: { kind: 'insight', id: prev.id, name: prev.name, url: prev.url },
                         newHash,
                         action: 'unchanged',
+                        validated: true,
                     });
                     newState.created.push({ ...prev, planKey: key, queryHash: newHash });
                     prevByKey.delete(key);
                 }
                 else if (prev) {
-                    // Query changed — PATCH the existing insight rather than creating a duplicate.
-                    const updated = await posthog.updateInsight({ id: prev.id, plan: insight, prUrl: pr.url });
-                    resolved.push({ plan: insight, resource: updated, newHash, action: 'updated' });
+                    const updated = await posthog.updateInsight({ id: prev.id, plan: insightPlan, prUrl: pr.url });
+                    resolved.push({ plan: insightPlan, resource: updated, newHash, action: 'updated', validated: true });
                     newState.created.push({ ...updated, planKey: key, queryHash: newHash });
                     prevByKey.delete(key);
                 }
                 else {
-                    // New plan — create.
-                    const created = await posthog.createInsight(insight, pr.url);
-                    resolved.push({ plan: insight, resource: created, newHash, action: 'created' });
+                    const created = await posthog.createInsight(insightPlan, pr.url);
+                    resolved.push({ plan: insightPlan, resource: created, newHash, action: 'created', validated: true });
                     newState.created.push({ ...created, planKey: key, queryHash: newHash });
                     if (dashboardResource) {
                         await posthog.addInsightToDashboard(created.id, dashboardResource.id);
@@ -51946,10 +52238,9 @@ async function runAnalyticsReviewer(args) {
                 }
             }
             catch (err) {
-                console.warn(`[analytics] Failed to resolve insight "${insight.name}":`, err);
+                console.warn(`[analytics] Failed to resolve insight "${insightPlan.name}":`, err);
             }
         }
-        // Whatever's still in prevByKey is in state but not in the current plan.
         for (const leftover of prevByKey.values())
             obsoletePrior.push(leftover);
     }
@@ -52075,8 +52366,11 @@ function renderAnalyticsMarkdown(args) {
     }
     else if (plan.insights.length) {
         lines.push('', '**Suggested insights** _(not auto-created)_');
-        for (const insight of plan.insights) {
-            lines.push(`- _${insight.name}_ — ${insight.description}`);
+        for (const spec of plan.insights) {
+            // InsightSpec only carries the NL description + planKey; the
+            // viz_title comes from the classifier and isn't available when
+            // create-resources is off.
+            lines.push(`- \`${spec.planKey}\` — ${spec.description}`);
         }
     }
     if (obsoletePrior.length) {
@@ -52089,8 +52383,11 @@ function renderAnalyticsMarkdown(args) {
     return lines.join('\n');
 }
 function renderInsightLine(r) {
+    if (!r.validated && r.resource.id === 0) {
+        return `- ⚠️ skipped — _${r.plan.name}_ (\`${r.plan.type}\`): ${r.validationError ?? 'validator failed'}`;
+    }
     const verb = r.action === 'unchanged' ? '↔ unchanged' : r.action === 'updated' ? '✏️ updated' : '✨ created';
-    return `- 📈 ${verb} — [${r.resource.name}](${r.resource.url})`;
+    return `- 📈 ${verb} \`${r.plan.type}\` — [${r.resource.name}](${r.resource.url})`;
 }
 function iconFor(kind) {
     switch (kind) {
