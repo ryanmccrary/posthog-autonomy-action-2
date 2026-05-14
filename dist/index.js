@@ -51431,7 +51431,7 @@ class PostHogClient {
         const body = {
             name: plan.name,
             description: `${plan.description}\n\nAuto-created by PostHog PR Autonomy Bot for ${prUrl}`,
-            query: plan.query,
+            query: wrapInsightQueryForStorage(plan.query),
             saved: true,
             tags: ['auto-created', 'pr-autonomy-bot'],
         };
@@ -51450,7 +51450,7 @@ class PostHogClient {
         const body = {
             name: args.plan.name,
             description: `${args.plan.description}\n\nUpdated by PostHog PR Autonomy Bot for ${args.prUrl}`,
-            query: args.plan.query,
+            query: wrapInsightQueryForStorage(args.plan.query),
         };
         const res = await this.safe(() => this.viaMcp('insight-update', {
             insightId: args.id,
@@ -51563,6 +51563,63 @@ class PostHogClient {
             throw new MCPUnavailableError('No MCP transport configured');
         return this.mcp.callTool(toolName, args);
     }
+}
+/**
+ * Wrap a raw insight query in the saved-insight storage shape PostHog's
+ * frontend renderer expects.
+ *
+ * Background: PostHog has TWO ingestion paths for insight queries.
+ *
+ *  - The MCP `insight-create` tool (`MCPInsightSerializer.validate_query`
+ *    in posthog/api/insight.py:1029-1067) auto-wraps raw `TrendsQuery` /
+ *    `FunnelsQuery` / `RetentionQuery` / `PathsQuery` /
+ *    `StickinessQuery` / `LifecycleQuery` into `InsightVizNode { source }`
+ *    and raw `HogQLQuery` into `DataVisualizationNode { source }`.
+ *  - The plain REST endpoint (`POST /api/projects/:id/insights/` →
+ *    `InsightSerializer.QueryFieldSerializer`) does NOT auto-wrap. It just
+ *    validates the value is a JSON object and stores it as-is.
+ *
+ * Our PostHogClient tries MCP first, falls back to REST. When the REST
+ * fallback fires (or when MCP isn't configured at all), the raw query gets
+ * stored without a wrapper. The PostHog UI then can't render it — the
+ * insight loads with empty chart area and the type tabs default to whatever
+ * is currently selected (e.g. "Trends BETA"). The query data is technically
+ * persisted; it's just unreachable through the visualisation pipeline.
+ *
+ * Wrapping unconditionally on our side is safe because the MCP serializer's
+ * validate_query loop checks for "already wrapped" first and passes those
+ * through unchanged (insight.py:1054-1058).
+ */
+function wrapInsightQueryForStorage(query) {
+    if (!query || typeof query !== 'object')
+        return query;
+    const kind = typeof query.kind === 'string' ? query.kind : undefined;
+    // Already-wrapped — pass through.
+    if (kind === 'InsightVizNode' || kind === 'DataVisualizationNode') {
+        return query;
+    }
+    // HogQL → DataVisualizationNode (this is what the REST endpoint expects
+    // for SQL-backed insights; see InsightSerializer + DataVisualizationNode
+    // in posthog/schema.py).
+    if (kind === 'HogQLQuery') {
+        return { kind: 'DataVisualizationNode', source: query };
+    }
+    // Product-analytics queries → InsightVizNode wrapper.
+    const productAnalyticsKinds = new Set([
+        'TrendsQuery',
+        'FunnelsQuery',
+        'RetentionQuery',
+        'PathsQuery',
+        'StickinessQuery',
+        'LifecycleQuery',
+    ]);
+    if (kind && productAnalyticsKinds.has(kind)) {
+        return { kind: 'InsightVizNode', source: query };
+    }
+    // Unknown kind — pass through and let the API decide. We don't want to
+    // silently rewrap something we don't recognise (e.g. a future Assistant*
+    // shape), since wrapping the wrong thing also breaks rendering.
+    return query;
 }
 
 ;// CONCATENATED MODULE: external "node:fs/promises"
@@ -52967,7 +53024,7 @@ function humanKind(k) {
 }
 
 ;// CONCATENATED MODULE: ./package.json
-const package_namespaceObject = /*#__PURE__*/JSON.parse('{"UU":"posthog-pr-autonomy-bot","rE":"0.2.0"}');
+const package_namespaceObject = /*#__PURE__*/JSON.parse('{"UU":"posthog-pr-autonomy-bot","rE":"0.2.1"}');
 ;// CONCATENATED MODULE: ./src/version.ts
 /**
  * Version stamp for the bot. Read at startup and logged so a CI run's
