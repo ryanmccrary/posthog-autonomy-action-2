@@ -30,7 +30,7 @@ interface FlagLLMOutput {
  * to decide whether the user has already granted permission to create the flag.
  * For the MVP we expose the permission ask in the PR comment markdown and let
  * the user opt in by reacting to the comment or by re-running the action with
- * a label like `autonomy-bot:create-flag`. The orchestrator inspects PR labels
+ * a label like `prehog:create-flag`. The orchestrator inspects PR labels
  * and sets `userApprovedFlagCreation` before invoking this reviewer.
  */
 export async function runFlagsReviewer(args: {
@@ -123,7 +123,7 @@ export async function runFlagsReviewer(args: {
     try {
       const flag = await posthog.createDraftFeatureFlag({
         key: s.flagKey,
-        name: `${s.flagKey} (auto-created by PR Autonomy Bot)`,
+        name: `${s.flagKey} (auto-created by PreHog)`,
         description: s.motivation,
         prUrl: pr.url,
       });
@@ -200,7 +200,7 @@ function renderFlagsMarkdown(args: {
   } else if (pendingPermission) {
     lines.push(
       '',
-      '> **Permission required.** I have NOT created this flag yet. To create it (inactive, at 0% rollout) add the label `autonomy-bot:create-flag` to this PR or reply `/autonomy create-flag` and I will create it on the next run.',
+      '> **Permission required.** I have NOT created this flag yet. To create it (inactive, at 0% rollout) add the label `prehog:create-flag` to this PR or reply `/prehog create-flag` and I will create it on the next run.',
     );
   }
 

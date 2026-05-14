@@ -82,7 +82,7 @@ export class MCPTransport {
     await this.rpc('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: this.cfg.clientName ?? 'posthog-pr-autonomy-bot', version: '0.1.0' },
+      clientInfo: { name: this.cfg.clientName ?? 'prehog', version: '0.1.0' },
     });
     // The MCP spec requires sending an `initialized` notification next. For
     // simple stateless RPC against the PostHog remote MCP it's tolerated to

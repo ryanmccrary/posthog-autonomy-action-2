@@ -6,7 +6,7 @@ runs will vary).
 
 ---
 
-## 🦔 PostHog PR Autonomy Review
+## 🦔 PreHog Review
 
 **Feature:** Adds `schedule` as a third workflow trigger type alongside `event` and `batch`  ·  **Size:** `medium`  ·  **Surfaces:** `workflows`, `hog_flows`, `scheduler`
 
@@ -69,7 +69,7 @@ _(no flag suggested)_
 To opt in, reply to this comment with:
 
 ```
-/autonomy notify #product-internal 7d
+/prehog notify #product-internal 7d
 ```
 
 <details><summary>Reviewers skipped</summary>
@@ -78,6 +78,6 @@ To opt in, reply to this comment with:
 
 </details>
 
-<sub>PR: [#54115](https://github.com/PostHog/posthog/pull/54115) · model: `claude-opus-4-7` · this is an auto-generated review; reply with /autonomy help for options.</sub>
+<sub>PR: [#54115](https://github.com/PostHog/posthog/pull/54115) · model: `claude-opus-4-7` · this is an auto-generated review; reply with /prehog help for options.</sub>
 
-<!-- posthog-pr-autonomy-bot -->
+<!-- prehog -->

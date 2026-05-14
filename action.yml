@@ -1,4 +1,4 @@
-name: 'PostHog PR Autonomy Bot'
+name: 'PreHog'
 description: 'Proactively suggests and creates missing PostHog instrumentation for new features in a PR.'
 author: 'PostHog'
 branding:

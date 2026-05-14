@@ -1,12 +1,12 @@
 /**
  * Reproducer tests for security-audit Finding 3:
  * "Comment-marker collision allows any commenter to poison the bot's
- *  autonomy-state and suppress its review on a PR."
+ *  prehog-state and suppress its review on a PR."
  *
  * Threat: `findCommentByMarker` (`src/github.ts`) matches a comment purely by
- * substring search of the body for `<!-- posthog-pr-autonomy-bot -->`, with no
+ * substring search of the body for `<!-- prehog -->`, with no
  * filter on the comment's author. Any user (including the PR author) who can
- * post a PR comment can include the marker plus a forged `autonomy-state` JSON
+ * post a PR comment can include the marker plus a forged `prehog-state` JSON
  * block, and the bot will parse the attacker's state as if it were its own
  * prior state — suppressing inline suggestions, redirecting create/update
  * decisions for PostHog insights, etc.
@@ -23,7 +23,7 @@ import assert from 'node:assert/strict';
 
 import { selectBotComment, type CommentForSelection } from './github.js';
 
-const MARKER = '<!-- posthog-pr-autonomy-bot -->';
+const MARKER = '<!-- prehog -->';
 
 describe('selectBotComment', () => {
   test('rejects a User-authored comment containing the marker (Finding 3 reproducer)', () => {
@@ -33,7 +33,7 @@ describe('selectBotComment', () => {
         body:
           'Looks good!\n\n' +
           MARKER +
-          '\n<!-- autonomy-state:{"version":1,"created":[],"postedSuggestions":["fake-fp"]} -->',
+          '\n<!-- prehog-state:{"version":1,"created":[],"postedSuggestions":["fake-fp"]} -->',
         user: { type: 'User', login: 'attacker-account' },
       },
       {
@@ -41,7 +41,7 @@ describe('selectBotComment', () => {
         body:
           'Earlier review by the bot.\n\n' +
           MARKER +
-          '\n<!-- autonomy-state:{"version":1,"created":[],"postedSuggestions":[]} -->',
+          '\n<!-- prehog-state:{"version":1,"created":[],"postedSuggestions":[]} -->',
         user: { type: 'Bot', login: 'github-actions[bot]' },
       },
     ];

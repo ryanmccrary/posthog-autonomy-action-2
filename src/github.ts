@@ -109,7 +109,7 @@ export class GitHubClient {
 
   /**
    * Read the existing bot comment for this PR, if any. Used by the orchestrator
-   * to recover persisted state (the autonomy-state JSON block) before running
+   * to recover persisted state (the prehog-state JSON block) before running
    * the reviewers, so re-runs can update rather than duplicate resources.
    */
   async getExistingReviewComment(prNumber: number, marker: string): Promise<string | null> {
@@ -120,7 +120,7 @@ export class GitHubClient {
       per_page: 100,
     });
     // Security (audit Finding 3): only treat Bot-authored comments as a source
-    // of recoverable autonomy-state. Without this filter, any user could post
+    // of recoverable prehog-state. Without this filter, any user could post
     // a comment containing the marker + a forged state block and have it
     // parsed as the bot's prior state.
     const match = selectBotComment(comments, marker);
@@ -232,7 +232,7 @@ export interface CommentForSelection {
  *
  * Fixes security-audit Finding 3 — without (2), ANY user with PR-comment
  * access could post a comment containing the marker and a forged
- * `autonomy-state` JSON block, and the bot would parse the attacker's state
+ * `prehog-state` JSON block, and the bot would parse the attacker's state
  * as if it were its own. The default GitHub-Actions token authenticates as
  * `github-actions[bot]` (type=Bot), so legitimate bot comments still match.
  *

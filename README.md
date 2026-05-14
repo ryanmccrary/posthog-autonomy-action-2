@@ -1,7 +1,7 @@
-# PostHog PR Autonomy Bot
+# PreHog
 
-A Greptile-style PR reviewer for PostHog — but specialized for **product
-autonomy**. It reads each PR semantically, figures out what feature is being
+A Greptile-style PR reviewer for PostHog — but specialized for **proactive
+instrumentation**. It reads each PR semantically, figures out what feature is being
 added, and proactively:
 
 1. Suggests missing PostHog instrumentation across **analytics**, **logs**,
@@ -130,7 +130,7 @@ this at their own MCP endpoint.
 The bot writes a small JSON state block at the bottom of its own PR comment:
 
 ```html
-<!-- autonomy-state:{"version":1,"created":[{"kind":"insight","id":42,"name":"…","url":"…","planKey":"workflows/activations-by-trigger","queryHash":"…"}, …]} -->
+<!-- prehog-state:{"version":1,"created":[{"kind":"insight","id":42,"name":"…","url":"…","planKey":"workflows/activations-by-trigger","queryHash":"…"}, …]} -->
 ```
 
 On the next run, the orchestrator reads that block and passes the prior state
@@ -182,7 +182,7 @@ that get posted as GitHub PR review comments. Reviewers see them on the
    anchors are rejected — they'd otherwise render at the top of the file
    instead of inline, which is loud and unhelpful.
 3. **Cross-run dedupe.** A fingerprint per suggestion (`kind | path | line
-   range | body prefix`) is persisted in the autonomy-state JSON block.
+   range | body prefix`) is persisted in the prehog-state JSON block.
    Subsequent runs on the same PR don't re-post suggestions whose fingerprint
    already shipped. The fingerprint includes a prefix of the suggestion body
    so materially-different proposals do still post.
@@ -221,8 +221,8 @@ the action inputs. Everything falls back to the summary comment.
 In your target repo, add a workflow:
 
 ```yaml
-# .github/workflows/posthog-autonomy.yml
-name: PostHog Autonomy Review
+# .github/workflows/prehog.yml
+name: PreHog Review
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
@@ -235,7 +235,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: PostHog/pr-autonomy-bot@main  # or pin to a specific SHA / tag
+      - uses: PostHog/prehog@main  # or pin to a specific SHA / tag
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -292,8 +292,8 @@ The bot **never auto-creates feature flags** without the PR author confirming.
 On a PR where a flag is recommended, the comment includes:
 
 > **Permission required.** I have NOT created this flag yet. To create it
-> (inactive, at 0% rollout) add the label `autonomy-bot:create-flag` to this
-> PR or reply `/autonomy create-flag` and I will create it on the next run.
+> (inactive, at 0% rollout) add the label `prehog:create-flag` to this
+> PR or reply `/prehog create-flag` and I will create it on the next run.
 
 For analytics, the bot **does** auto-create insights and dashboards by default —
 they're side-effect-free (no production impact, can be deleted) and they're the
@@ -373,7 +373,7 @@ src/
 ├── index.ts                            # GitHub Action entry — orchestrator
 ├── config.ts                           # zod-validated env loader (MCP url, REST creds, suggestion knobs)
 ├── types.ts                            # shared types (FeatureSummary, InlineSuggestion, etc.)
-├── state.ts                            # parse/serialize autonomy-state + suggestion fingerprints
+├── state.ts                            # parse/serialize prehog-state + suggestion fingerprints
 ├── claude.ts                           # Anthropic wrapper (prompt caching, JSON parse)
 ├── github.ts                           # PR diff, comment upsert, review-with-suggestions, selectBotComment
 ├── comment.ts                          # summary comment renderer (embeds state block + sanitizes)

@@ -78,7 +78,7 @@ const configSchema = z.object({
    *      added properties via `POST /property_definitions/`).
    *   3. Re-run the analytics reviewer so insights drop their ⏳ Waiting-for
    *      prefix now that the schema exists.
-   *   4. Record the merge commit sha in autonomy-state.
+   *   4. Record the merge commit sha in prehog-state.
    *
    * Wired from the workflow as:
    *   pr-merged: ${{ github.event.pull_request.merged == true && 'true' || 'false' }}

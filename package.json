@@ -1,5 +1,5 @@
 {
-  "name": "posthog-pr-autonomy-bot",
+  "name": "prehog",
   "version": "0.4.0",
   "private": true,
   "description": "Proactive PostHog instrumentation reviewer for GitHub PRs (analytics, logs, error tracking, LLM analytics, feature flags).",

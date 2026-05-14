@@ -139,7 +139,7 @@ export function renderSuggestionCommentBody(s: ValidatedSuggestion): string {
     s.suggestion,
     '```',
     '',
-    `<sub>Inline suggestion from PostHog PR Autonomy Bot · confidence ${(s.confidence * 100).toFixed(0)}%.</sub>`,
+    `<sub>Inline suggestion from PreHog · confidence ${(s.confidence * 100).toFixed(0)}%.</sub>`,
   ].join('\n');
 }
 

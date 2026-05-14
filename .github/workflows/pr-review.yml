@@ -1,4 +1,4 @@
-name: PostHog Autonomy Review
+name: PreHog Review
 
 # Reference workflow showing how consumers wire this action. Two trigger
 # moments matter:
@@ -40,7 +40,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: PostHog/pr-autonomy-bot@main   # or pin to a SHA / tag
+      - uses: PostHog/prehog@main   # or pin to a SHA / tag
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}

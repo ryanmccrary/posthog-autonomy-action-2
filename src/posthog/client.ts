@@ -193,10 +193,10 @@ export class PostHogClient {
   async createInsight(plan: InsightPlan, prUrl: string): Promise<CreatedResource> {
     const body = {
       name: plan.name,
-      description: `${plan.description}\n\nAuto-created by PostHog PR Autonomy Bot for ${prUrl}`,
+      description: `${plan.description}\n\nAuto-created by PreHog for ${prUrl}`,
       query: wrapInsightQueryForStorage(plan.query),
       saved: true,
-      tags: ['auto-created', 'pr-autonomy-bot'],
+      tags: ['auto-created', 'prehog'],
     };
     const res = await this.safe(
       () => this.viaMcp<{ id: number; short_id: string; name: string }>('insight-create', body),
@@ -219,7 +219,7 @@ export class PostHogClient {
   async updateInsight(args: { id: number | string; plan: InsightPlan; prUrl: string }): Promise<CreatedResource> {
     const body = {
       name: args.plan.name,
-      description: `${args.plan.description}\n\nUpdated by PostHog PR Autonomy Bot for ${args.prUrl}`,
+      description: `${args.plan.description}\n\nUpdated by PreHog for ${args.prUrl}`,
       query: wrapInsightQueryForStorage(args.plan.query),
     };
     const res = await this.safe(
@@ -246,8 +246,8 @@ export class PostHogClient {
   async createDashboard(name: string, description: string, prUrl: string): Promise<CreatedResource> {
     const body = {
       name,
-      description: `${description}\n\nAuto-created by PostHog PR Autonomy Bot for ${prUrl}`,
-      tags: ['auto-created', 'pr-autonomy-bot'],
+      description: `${description}\n\nAuto-created by PreHog for ${prUrl}`,
+      tags: ['auto-created', 'prehog'],
     };
     const res = await this.safe(
       () => this.viaMcp<{ id: number; name: string }>('dashboard-create', body),
@@ -324,7 +324,7 @@ export class PostHogClient {
       // the new def doesn't claim to have a last-seen-at timestamp.
       created_at: null,
       last_seen_at: null,
-      tags: ['auto-registered', 'pr-autonomy-bot'],
+      tags: ['auto-registered', 'prehog'],
     };
 
     const existing = await this.findEventDefinitionByName(args.name);
@@ -428,7 +428,7 @@ export class PostHogClient {
       filters: { groups: [{ properties: [], rollout_percentage: 0 }] },
       active: false,
       ensure_experience_continuity: false,
-      tags: ['auto-created', 'pr-autonomy-bot'],
+      tags: ['auto-created', 'prehog'],
     };
     const res = await this.safe(
       () => this.viaMcp<{ id: number; key: string }>('create-feature-flag', body),

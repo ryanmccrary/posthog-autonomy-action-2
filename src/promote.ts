@@ -9,7 +9,7 @@
  *
  * What it does:
  *
- *   1. Recover the bot's prior `autonomy-state` from its own PR comment so
+ *   1. Recover the bot's prior `prehog-state` from its own PR comment so
  *      we know which events / property additions the bot suggested during
  *      review.
  *   2. Scan the merged diff (PR diff at HEAD == the merged commit) for
@@ -65,7 +65,7 @@ export interface PromotionResult {
  * `suggestedPropertyNames`: properties the bot proposed adding to existing
  *   events (for `extend_existing_capture`).
  *
- * Today the bot doesn't persist these explicitly in autonomy-state — the
+ * Today the bot doesn't persist these explicitly in prehog-state — the
  * orchestrator reconstructs them by inspecting the previously-posted
  * inline suggestions and the comment markdown. Future-proof: when we
  * extend the state schema to record suggested events / properties, this

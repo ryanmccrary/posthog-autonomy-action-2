@@ -3,8 +3,8 @@
  * an external state store. Layout:
  *
  *   ... markdown ...
- *   <!-- autonomy-state:{...JSON...} -->
- *   <!-- posthog-pr-autonomy-bot -->
+ *   <!-- prehog-state:{...JSON...} -->
+ *   <!-- prehog -->
  *
  * The orchestrator reads the existing comment before running, parses the JSON
  * block, hands it to reviewers, and re-embeds the updated state on save.
@@ -12,7 +12,7 @@
 import { createHash } from 'node:crypto';
 import type { CreatedResource } from './types.js';
 
-export const STATE_OPEN = '<!-- autonomy-state:';
+export const STATE_OPEN = '<!-- prehog-state:';
 export const STATE_CLOSE = '-->';
 
 export interface PriorResource extends CreatedResource {

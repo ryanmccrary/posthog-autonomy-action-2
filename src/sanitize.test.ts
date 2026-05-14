@@ -188,14 +188,14 @@ function makeProductMix(): CustomerProductMix {
 function makePr(): PullRequestContext {
   return {
     owner: 'PostHog',
-    repo: 'pr-autonomy-bot',
+    repo: 'prehog',
     number: 42,
     title: 'Test PR',
     body: '',
     baseSha: 'a'.repeat(40),
     headSha: 'b'.repeat(40),
     author: 'attacker',
-    url: 'https://github.com/PostHog/pr-autonomy-bot/pull/42',
+    url: 'https://github.com/PostHog/prehog/pull/42',
     changedFiles: [],
     unifiedDiff: '',
   };

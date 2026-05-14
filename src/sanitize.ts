@@ -25,7 +25,7 @@
  *     explicitly.
  *
  * Defense in depth: even if a marginal vector slipped past this sanitizer,
- * the PR Autonomy Bot does not store or render its outputs anywhere that
+ * PreHog does not store or render its outputs anywhere that
  * could leak more than the bot's analysis context — but the audit
  * specifically flagged image auto-fetch via Camo, and that's what this
  * closes.

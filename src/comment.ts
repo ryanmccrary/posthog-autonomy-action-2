@@ -52,7 +52,7 @@ export function renderFinalComment(args: {
   const skipped = outputs.filter((o) => !o.applicable);
 
   const lines: string[] = [];
-  lines.push('## 🦔 PostHog PR Autonomy Review');
+  lines.push('## 🦔 PreHog Review');
   lines.push('');
   lines.push(
     `**Feature:** ${summary.oneLine}  ·  **Size:** \`${summary.size}\`  ·  **Surfaces:** ${summary.surfaces.map((s) => `\`${s}\``).join(', ') || '—'}`,
@@ -123,7 +123,7 @@ export function renderFinalComment(args: {
   }
 
   lines.push(
-    `<sub>PR: [#${pr.number}](${pr.url}) · model: \`claude-opus-4-7\` · this is an auto-generated review; reply with /autonomy help for options.</sub>`,
+    `<sub>PR: [#${pr.number}](${pr.url}) · model: \`claude-opus-4-7\` · this is an auto-generated review; reply with /prehog help for options.</sub>`,
   );
 
   // State block — single line, parseable on re-run. Always last so the upsert

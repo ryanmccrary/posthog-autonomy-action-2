@@ -30,7 +30,7 @@ export const COMMIT_SHA: string = (process.env.GITHUB_SHA ?? 'local').slice(0, 7
 
 /**
  * One-line tag you can grep for in CI logs, e.g.:
- *   [autonomy-bot] posthog-pr-autonomy-bot v0.2.0 (rev a244cb6)
+ *   [prehog] prehog v0.2.0 (rev a244cb6)
  */
 export function versionTag(): string {
   return `${pkg.name} v${VERSION} (rev ${COMMIT_SHA})`;
