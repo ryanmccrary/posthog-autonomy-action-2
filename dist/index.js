@@ -1840,7 +1840,7 @@ class ExecState extends events.EventEmitter {
 
 /***/ }),
 
-/***/ 9267:
+/***/ 1648:
 /***/ ((__unused_webpack_module, exports, __nccwpck_require__) => {
 
 
@@ -1931,7 +1931,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getOctokit = exports.context = void 0;
-const Context = __importStar(__nccwpck_require__(9267));
+const Context = __importStar(__nccwpck_require__(1648));
 const utils_1 = __nccwpck_require__(8006);
 exports.context = new Context.Context();
 /**
@@ -2054,7 +2054,7 @@ var __importStar = (this && this.__importStar) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", ({ value: true }));
 exports.getOctokitOptions = exports.GitHub = exports.defaults = exports.context = void 0;
-const Context = __importStar(__nccwpck_require__(9267));
+const Context = __importStar(__nccwpck_require__(1648));
 const Utils = __importStar(__nccwpck_require__(5156));
 // octokit + plugins
 const core_1 = __nccwpck_require__(1897);
@@ -52966,7 +52966,45 @@ function humanKind(k) {
     }
 }
 
+;// CONCATENATED MODULE: ./package.json
+const package_namespaceObject = /*#__PURE__*/JSON.parse('{"UU":"posthog-pr-autonomy-bot","rE":"0.2.0"}');
+;// CONCATENATED MODULE: ./src/version.ts
+/**
+ * Version stamp for the bot. Read at startup and logged so a CI run's
+ * output makes it obvious which version of the action is executing —
+ * useful when verifying that a PR's changes are actually deployed.
+ *
+ * Two pieces:
+ *   - `VERSION`: the npm package version from package.json (single source
+ *     of truth — bump there, here is just a re-export).
+ *   - `COMMIT_SHA`: the GitHub-provided sha of the workflow run, when
+ *     available. Falls back to "local" outside of Actions.
+ *
+ * `package.json` is bundled by ncc at build time because we use
+ * `resolveJsonModule: true` (see tsconfig.json), so this works in both
+ * source and bundled execution.
+ */
+// Plain JSON import — works under our tsconfig's `resolveJsonModule: true`.
+// We avoid the `with { type: 'json' }` attribute form because it requires
+// `module: nodenext` (or similar) and the project pins `module: ES2022`.
+
+const src_version_VERSION = package_namespaceObject.rE;
+/**
+ * Short (7-char) commit sha if running inside GitHub Actions, otherwise
+ * "local". `GITHUB_SHA` is set by Actions to the commit that triggered
+ * the workflow.
+ */
+const COMMIT_SHA = (process.env.GITHUB_SHA ?? 'local').slice(0, 7);
+/**
+ * One-line tag you can grep for in CI logs, e.g.:
+ *   [autonomy-bot] posthog-pr-autonomy-bot v0.2.0 (rev a244cb6)
+ */
+function versionTag() {
+    return `${package_namespaceObject.UU} v${src_version_VERSION} (rev ${COMMIT_SHA})`;
+}
+
 ;// CONCATENATED MODULE: ./src/index.ts
+
 
 
 
@@ -52981,6 +53019,10 @@ function humanKind(k) {
 
 const COMMENT_MARKER = '<!-- posthog-pr-autonomy-bot -->';
 async function main() {
+    // First line of every run — pin this in your eyes when verifying which
+    // version of the action is deployed (or `grep "posthog-pr-autonomy-bot v"
+    // run.log` after the fact).
+    console.log(`[autonomy-bot] ${versionTag()}`);
     const config = loadConfig();
     const github = new GitHubClient(config.githubToken, config.githubRepository);
     const claude = new ClaudeClient(config.anthropicApiKey, config.model);
