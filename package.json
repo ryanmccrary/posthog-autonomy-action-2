@@ -6,7 +6,7 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "ncc build src/index.ts -o dist --source-map --license licenses.txt && cp -R src/prompts dist/prompts",
+    "build": "ncc build src/index.ts -o dist --source-map --license licenses.txt && rm -rf dist/prompts && cp -R src/prompts dist/prompts",
     "start": "node --enable-source-maps dist/index.js",
     "dev": "tsx watch src/index.ts",
     "local": "tsx scripts/local-run.ts",

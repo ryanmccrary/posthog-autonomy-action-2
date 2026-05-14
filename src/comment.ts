@@ -62,7 +62,7 @@ export function renderFinalComment(args: {
 
   if (applicable.length === 0) {
     lines.push(
-      '_No instrumentation suggestions for this PR. The feature summary suggests none of the enabled PostHog products are relevant._',
+      '_No instrumentation suggestions for this PR. The feature summary suggests none of the PostHog products are relevant to the changes in this diff._',
     );
   }
 

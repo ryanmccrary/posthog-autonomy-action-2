@@ -76,7 +76,7 @@ export class PostHogClient {
     // Error tracking
     const issues = await this.safe(
       () => this.viaMcp<{ results: unknown[] }>('query-error-tracking-issues-list', { limit: 1 }),
-      () => this.rest.fetchJson<{ results: unknown[] }>(`/api/projects/${this.projectId}/error_tracking/issues/?limit=1`),
+      () => this.rest.fetchJson<{ results: unknown[] }>(`/api/environments/${this.projectId}/error_tracking/issues/?limit=1`),
       null,
     );
     enabled.error_tracking = issues !== null;
@@ -91,10 +91,10 @@ export class PostHogClient {
     );
     enabled.llm_analytics = llm.results?.some((e) => e.name === '$ai_generation') ?? false;
 
-    // Logs — best-effort
+    // Logs — best-effort (probe the attributes endpoint which is a simple GET)
     const logs = await this.safe(
       () => this.viaMcp<{ results: unknown[] }>('logs-count', { limit: 1 }),
-      () => this.rest.fetchJson<{ results: unknown[] }>(`/api/environments/${this.projectId}/logs/?limit=1`),
+      () => this.rest.fetchJson<Record<string, unknown>>(`/api/environments/${this.projectId}/logs/attributes/`),
       null,
     );
     enabled.logs = logs !== null;

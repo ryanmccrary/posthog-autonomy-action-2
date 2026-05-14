@@ -28,31 +28,30 @@ Output:
     rationale: string;
   }>;
   reasoning: string;
+  inlineSuggestions: Array<{     // REQUIRED — always include this field (use [] if no suggestions). Committable code patches.
+    path: string;                // a file IN THE PR DIFF
+    startLine: number;           // 1-indexed RIGHT-side line, must be inside a changed hunk
+    endLine: number;             // inclusive end of the range to replace
+    suggestion: string;          // exact wrapped replacement (e.g. `from posthog.ai.openai import OpenAI; ...`)
+    explanation: string;
+    kind: "llm_wrapper";
+    confidence: number;          // 0..1; 0.7-0.9 when the LLM call is visible in the diff
+  }>;
 }
 ```
 
-If no LLM call sites were added, return `applicable: false`.
+If no LLM call sites were added, return
+`{ "applicable": false, "suggestions": [], "reasoning": "...", "inlineSuggestions": [] }`.
 
 ### Inline-suggestion guidance
 
-When a NEW LLM call site is visible in the diff (e.g. `openai.chat.completions.create(...)`,
-`anthropic.messages.create(...)`), emit an `inlineSuggestions` entry that
-replaces those lines with the PostHog-wrapped equivalent. Extend the JSON
-schema with:
+Actively look for opportunities to populate `inlineSuggestions`. When a NEW LLM
+call site is visible in the diff (e.g. `openai.chat.completions.create(...)`,
+`anthropic.messages.create(...)`), emit a suggestion that replaces those lines
+with the PostHog-wrapped equivalent. These committable patches are the most
+actionable output you can produce.
 
-```ts
-inlineSuggestions: Array<{
-  path: string;                  // a file IN THE PR DIFF
-  startLine: number;             // 1-indexed RIGHT-side line, must be inside a changed hunk
-  endLine: number;               // inclusive end of the range to replace
-  suggestion: string;            // exact wrapped replacement (e.g. `from posthog.ai.openai import OpenAI; ...`)
-  explanation: string;
-  kind: "llm_wrapper";
-  confidence: number;            // 0..1; <0.6 will be dropped to summary
-}>
-```
-
-Only emit when the diff visibly contains the LLM call (you can read the
-client construction or method invocation). Otherwise stay in summary form.
+Confidence: 0.7-0.9 when the LLM call is visible in the diff. Only drop below
+0.65 if you have to guess the location.
 
 Output ONLY the JSON object — no commentary, no fences.
