@@ -51,6 +51,10 @@ call site is visible in the diff (e.g. `openai.chat.completions.create(...)`,
 with the PostHog-wrapped equivalent. These committable patches are the most
 actionable output you can produce.
 
+**Every line in the anchor range must be inside a changed hunk** of the diff.
+If your range includes even one unchanged line outside any `@@` hunk, GitHub
+renders a broken display. When in doubt, shrink the range to only the changed lines.
+
 Confidence: 0.7-0.9 when the LLM call is visible in the diff. Only drop below
 0.65 if you have to guess the location.
 
