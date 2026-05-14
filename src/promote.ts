@@ -141,37 +141,59 @@ export async function runPromotion(args: {
  * that match the bot's suggested events, and properties that were added to
  * those same capture-call object literals.
  *
- * This is intentionally a regex pass, not an AST walk. Inline-suggestion
- * Phase 2 will likely upgrade to a real parser when we add `extend_existing`
- * detection at the AST level; for now we accept the regex's false-negatives
- * (it won't catch oddly-formatted calls) since false-positives are the worse
- * outcome — we'd register an event that doesn't actually fire and confuse
- * the user.
+ * Intersection of `findCapturesInDiff(diff)` ∩ `suggestions.*` — used by the
+ * merge path to figure out which previously-suggested events actually
+ * shipped. The analytics reviewer uses the unfiltered `findCapturesInDiff`
+ * directly to gate eager insight creation on "the event the user is about
+ * to apply or already committed."
+ *
+ * Regex pass, not AST. Accepts false-negatives (oddly-formatted calls)
+ * since false-positives would register events that don't fire.
  */
 export function scanLandedEntities(
   unifiedDiff: string,
   suggestions: PriorSuggestions,
 ): { events: string[]; properties: string[] } {
-  if (!unifiedDiff) return { events: [], properties: [] };
+  const { eventsInDiff, propertiesInDiff } = findCapturesInDiff(unifiedDiff);
+  const events = Array.from(suggestions.suggestedEventNames).filter((name) => eventsInDiff.has(name));
+  const properties = Array.from(suggestions.suggestedPropertyNames).filter((name) => propertiesInDiff.has(name));
+  return { events, properties };
+}
 
-  // 1) Find capture('name', …) calls anywhere in the diff. We don't try to
-  //    constrain to "+ added lines" only — the merge brings everything
-  //    in and we want to catch capture calls that survived the review.
+/**
+ * Lower-level helper: returns every event name that appears in a
+ * `posthog.capture('<name>', ...)` call within the supplied unified diff,
+ * plus every property key added inside any such call's object-literal
+ * argument list.
+ *
+ * Shared with the analytics reviewer, which uses these sets to decide
+ * whether to eagerly create an insight for a given suggested event. We
+ * only want to create insights for events that either (a) already exist
+ * in the project's schema or (b) have been committed to the PR via
+ * "Apply suggestion" — anything else is deferred until the next run.
+ */
+export function findCapturesInDiff(unifiedDiff: string): {
+  eventsInDiff: Set<string>;
+  propertiesInDiff: Set<string>;
+} {
   const eventsInDiff = new Set<string>();
+  const propertiesInDiff = new Set<string>();
+  if (!unifiedDiff) return { eventsInDiff, propertiesInDiff };
+
+  // Capture call event names — search the whole diff (we don't restrict
+  // to +-prefixed lines; a capture in a context line of the merged diff
+  // is still legit instrumentation that exists in the repo).
   let m: RegExpExecArray | null;
   CAPTURE_RE.lastIndex = 0;
   while ((m = CAPTURE_RE.exec(unifiedDiff))) {
     if (m[1]) eventsInDiff.add(m[1]);
   }
 
-  const events = Array.from(suggestions.suggestedEventNames).filter((name) => eventsInDiff.has(name));
-
-  // 2) Find property additions inside capture-call object literals. We
-  //    look at + lines only (truly new additions) so we don't re-register
-  //    properties that already existed. The heuristic: a "+" line that
-  //    contains a quoted identifier followed by ":" and we're inside the
-  //    same hunk as a capture call.
-  const properties = new Set<string>();
+  // Property keys inside capture-call argument objects. Track a small
+  // "capture window" so we only attribute property keys to capture calls,
+  // not arbitrary object literals nearby. Reset on @@ hunk headers.
+  // Only look at + lines for properties (we want NEW additions, not
+  // pre-existing keys in a context line).
   const lines = unifiedDiff.split('\n');
   let withinCaptureWindow = 0;
   for (const line of lines) {
@@ -179,10 +201,12 @@ export function scanLandedEntities(
       withinCaptureWindow = 0;
       continue;
     }
-    // Track whether we just saw a capture( in any line of the hunk. We
-    // treat the next ~12 lines as "inside the capture call's argument list"
-    // since multi-line capture calls rarely span more than that.
-    if (line.includes('posthog.capture(') || line.includes('posthog_capture(') || line.includes('posthoganalytics.capture(')) {
+    if (
+      line.includes('posthog.capture(') ||
+      line.includes('posthog_capture(') ||
+      line.includes('posthoganalytics.capture(') ||
+      /posthog\w*(?:\.|->|::)capture\s*\(/i.test(line)
+    ) {
       withinCaptureWindow = 12;
     } else if (withinCaptureWindow > 0) {
       withinCaptureWindow -= 1;
@@ -191,16 +215,13 @@ export function scanLandedEntities(
       PROPERTY_KEY_IN_OBJECT.lastIndex = 0;
       let pm: RegExpExecArray | null;
       while ((pm = PROPERTY_KEY_IN_OBJECT.exec(line))) {
-        // Group 1 captures quoted keys, group 2 captures bare JS keys.
         const key = pm[1] ?? pm[2];
-        if (key && suggestions.suggestedPropertyNames.has(key)) {
-          properties.add(key);
-        }
+        if (key) propertiesInDiff.add(key);
       }
     }
   }
 
-  return { events, properties: Array.from(properties) };
+  return { eventsInDiff, propertiesInDiff };
 }
 
 /**
