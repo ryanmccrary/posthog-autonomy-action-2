@@ -13,7 +13,7 @@
 import { describe, test } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { renderPromotionMarkdown, scanLandedEntities } from './promote.js';
+import { findCapturesInDiff, renderPromotionMarkdown, scanLandedEntities } from './promote.js';
 
 describe('scanLandedEntities — capture() calls', () => {
   test('matches a JS posthog.capture call against a suggested event', () => {
@@ -153,6 +153,47 @@ describe('scanLandedEntities — defensive', () => {
       suggestedPropertyNames: new Set(),
     });
     assert.deepEqual(r.events, []);
+  });
+});
+
+describe('findCapturesInDiff — used by the analytics reviewer to gate insight creation', () => {
+  test('returns every event name that appears in a capture() call, unfiltered by any suggestions', () => {
+    const diff = `
++ posthog.capture('co_host_added', {});
++ posthog.capture('something_else', {});
+    `.trim();
+    const r = findCapturesInDiff(diff);
+    assert.deepEqual([...r.eventsInDiff].sort(), ['co_host_added', 'something_else']);
+  });
+
+  test('returns every property key added inside any capture-call window, unfiltered', () => {
+    const diff = `
+@@ -10,3 +10,5 @@
+ posthog.capture('foo', {
++  trigger_type: 'schedule',
++  flow_id: id,
+ })
+    `.trim();
+    const r = findCapturesInDiff(diff);
+    assert.ok(r.propertiesInDiff.has('trigger_type'));
+    assert.ok(r.propertiesInDiff.has('flow_id'));
+  });
+
+  test('does not claim property keys outside a capture window', () => {
+    const diff = `
+@@ -1,2 +1,3 @@
+ const someConfig = {
++  trigger_type: 'foo',
+ }
+    `.trim();
+    const r = findCapturesInDiff(diff);
+    assert.equal(r.propertiesInDiff.size, 0);
+  });
+
+  test('empty diff returns empty sets', () => {
+    const r = findCapturesInDiff('');
+    assert.equal(r.eventsInDiff.size, 0);
+    assert.equal(r.propertiesInDiff.size, 0);
   });
 });
 

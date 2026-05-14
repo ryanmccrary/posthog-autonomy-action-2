@@ -5,6 +5,7 @@ import {
   buildWaitingPrefix,
   findMissingEntities,
 } from '../insight-service/referenced-entities.js';
+import { findCapturesInDiff } from '../promote.js';
 import type { PostHogClient, ExistingEvent } from '../posthog/client.js';
 import { loadPrompt } from '../prompts.js';
 import { stripUntrustedMarkdown } from '../sanitize.js';
@@ -59,6 +60,21 @@ interface ResolvedInsight {
   validationError?: string;
 }
 
+/**
+ * Per-insight record for the "deferred" path: the bot generated a plan
+ * but the events/properties it depends on aren't yet in the project
+ * schema OR the PR diff. Surfaced in the comment so the reviewer can
+ * decide to commit the relevant inline suggestion(s) — the next run
+ * picks it up via findCapturesInDiff and creates the insight then.
+ */
+interface DeferredInsight {
+  planKey: string;
+  vizTitle: string;
+  vizDescription: string;
+  insightType: InsightPlan['type'];
+  missing: { events: string[]; properties: string[] };
+}
+
 export async function runAnalyticsReviewer(args: {
   claude: ClaudeClient;
   github: GitHubClient;
@@ -100,6 +116,21 @@ export async function runAnalyticsReviewer(args: {
   const existingPropertyNames = new Set(
     existingEvents.flatMap((e) => e.properties.map((p) => p.name)),
   );
+
+  // Also collect every event / property the PR diff currently contains
+  // (i.e. the user has either committed it manually or clicked
+  // "Apply suggestion" on one of our previous inline patches). We treat
+  // anything in this set as "real enough" to merit eager insight creation,
+  // even if it hasn't fired in the project yet — the merge-time promote
+  // pass will register the formal event definition shortly after.
+  //
+  // The union of (existing in schema) ∪ (committed in diff) is what we
+  // consider "available" for the purposes of insight creation. Anything
+  // missing from BOTH means the user hasn't accepted the suggestion yet,
+  // and we DEFER creating an insight that depends on it.
+  const { eventsInDiff, propertiesInDiff } = findCapturesInDiff(pr.unifiedDiff);
+  const availableEventNames = new Set([...existingEventNames, ...eventsInDiff]);
+  const availablePropertyNames = new Set([...existingPropertyNames, ...propertiesInDiff]);
 
   // 2. Scan nearby tracking calls.
   const nearbyCalls = await collectNearbyTrackingCalls(github, summary, pr);
@@ -166,6 +197,7 @@ export async function runAnalyticsReviewer(args: {
   // 5. Resolve insights: classifier + typed generator + validator (the
   //    NL → structured-query pipeline), THEN create vs update vs leave-alone.
   const resolved: ResolvedInsight[] = [];
+  const deferred: DeferredInsight[] = [];
   const obsoletePrior: PriorResource[] = [];
 
   if (args.createResources && plan.insights.length > 0) {
@@ -232,18 +264,44 @@ export async function runAnalyticsReviewer(args: {
             `[analytics] Insight "${spec.description.slice(0, 60)}" failed validator: ${validationError}`,
           );
         }
-        // Detect references to events/properties the project hasn't seen
-        // and prefix the visible description with a "⏳ Waiting for X"
-        // marker. This is forward-looking insights' biggest UX problem:
-        // the bot creates a chart for an event the developer hasn't
-        // instrumented yet, so the chart renders empty and there's no
-        // signal to the viewer about why. The marker makes that explicit.
-        const missing = findMissingEntities({
+
+        // Triage the entities this insight references into three buckets:
+        //   1. In the project's existing schema (already firing) → fully
+        //      realised, no decoration needed.
+        //   2. In the PR diff but NOT yet in the schema → the user has
+        //      committed the suggestion (or hand-rolled the capture call)
+        //      but no events have fired yet. We DO create the insight,
+        //      with a "⏳ Waiting for X" prefix so the empty chart is
+        //      self-explanatory until data flows.
+        //   3. Missing from BOTH → the user hasn't accepted the suggestion
+        //      yet. We DEFER creation entirely. The previous behaviour
+        //      created a phantom insight against a non-existent event,
+        //      cluttering the project before the dev even decided whether
+        //      to adopt the suggestion — that's what the user pushed back
+        //      on. Defer and surface in the comment instead.
+        const missingFromAll = findMissingEntities({
+          query: result.query,
+          existingEventNames: availableEventNames,
+          existingPropertyNames: availablePropertyNames,
+        });
+        if (missingFromAll.events.length > 0 || missingFromAll.properties.length > 0) {
+          deferred.push({
+            planKey: key,
+            vizTitle: result.viz_title,
+            vizDescription: result.viz_description,
+            insightType: result.insight_type,
+            missing: missingFromAll,
+          });
+          continue;
+        }
+
+        // Some refs are in-diff-only — flag with the Waiting-for prefix.
+        const missingFromSchema = findMissingEntities({
           query: result.query,
           existingEventNames,
           existingPropertyNames,
         });
-        const waitingPrefix = buildWaitingPrefix(missing);
+        const waitingPrefix = buildWaitingPrefix(missingFromSchema);
 
         insightPlan = {
           name: result.viz_title,
@@ -318,6 +376,7 @@ export async function runAnalyticsReviewer(args: {
   const markdown = renderAnalyticsMarkdown({
     plan,
     resolved,
+    deferred,
     obsoletePrior,
     pr,
   });
@@ -422,10 +481,11 @@ function findCaptureCalls(source: string): string[] {
 function renderAnalyticsMarkdown(args: {
   plan: AnalyticsLLMOutput;
   resolved: ResolvedInsight[];
+  deferred: DeferredInsight[];
   obsoletePrior: PriorResource[];
   pr: PullRequestContext;
 }): string {
-  const { plan, resolved, obsoletePrior } = args;
+  const { plan, resolved, deferred, obsoletePrior } = args;
   const lines: string[] = [];
 
   lines.push('### Product analytics');
@@ -461,13 +521,37 @@ function renderAnalyticsMarkdown(args: {
     lines.push('', '**In PostHog**');
     for (const d of dashboards) lines.push(`- 📊 Dashboard: [${d.name}](${d.url})`);
     for (const l of insightLines) lines.push(l);
-  } else if (plan.insights.length) {
+  } else if (plan.insights.length && deferred.length === 0) {
     lines.push('', '**Suggested insights** _(not auto-created)_');
     for (const spec of plan.insights) {
       // InsightSpec only carries the NL description + planKey; the
       // viz_title comes from the classifier and isn't available when
       // create-resources is off.
       lines.push(`- \`${spec.planKey}\` — ${spec.description}`);
+    }
+  }
+
+  if (deferred.length > 0) {
+    lines.push(
+      '',
+      `**${deferred.length} insight${deferred.length === 1 ? '' : 's'} deferred** _(waiting for the suggested instrumentation to be committed)_`,
+      '> The bot only creates insights for events / properties that are either already in your project schema or visible in this PR\'s diff. Click "Apply suggestion" on the inline patches below (or commit the equivalent code), and the next bot run will create these insights automatically.',
+    );
+    for (const d of deferred) {
+      const missingBits: string[] = [];
+      if (d.missing.events.length > 0) {
+        missingBits.push(
+          `event${d.missing.events.length === 1 ? '' : 's'} ${d.missing.events.map((e) => `\`${e}\``).join(', ')}`,
+        );
+      }
+      if (d.missing.properties.length > 0) {
+        missingBits.push(
+          `propert${d.missing.properties.length === 1 ? 'y' : 'ies'} ${d.missing.properties.map((p) => `\`${p}\``).join(', ')}`,
+        );
+      }
+      lines.push(
+        `- ⏸️ _${d.vizTitle}_ (\`${d.insightType}\`) — waiting on ${missingBits.join(' and ')}`,
+      );
     }
   }
 
