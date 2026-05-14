@@ -52008,6 +52008,140 @@ async function describeToInsight(args) {
     };
 }
 
+;// CONCATENATED MODULE: ./src/insight-service/referenced-entities.ts
+/**
+ * Walk a generated PostHog query and collect the event names + property
+ * names it references. Used by the analytics reviewer to detect insights
+ * that depend on events / properties the customer's project hasn't seen
+ * yet, so we can prefix the visible description with a "⏳ Waiting for X"
+ * marker rather than silently saving an unrenderable insight.
+ *
+ * Best-effort across the four supported kinds:
+ *   - TrendsQuery / FunnelsQuery:  series[].event,  breakdownFilter.breakdown
+ *   - RetentionQuery:              retentionFilter.{targetEntity,returningEntity}.{id,name}
+ *   - HogQLQuery:                  regex over the SQL (event = '...', properties.X)
+ *
+ * If we can't confidently extract a reference (e.g. HogQL that doesn't
+ * pattern-match), we err on the side of NOT flagging — false positives
+ * here would pollute every insight description with a Waiting marker.
+ */
+/**
+ * Public entry point. Returns the subset of referenced entities that AREN'T
+ * present in the project's existing schema, in the order they appear in
+ * the query (so the human-readable message can show the first few).
+ *
+ * `existingProperties` is the union of properties across all
+ * `existingEvents` — flatten upstream to avoid re-flattening per insight.
+ */
+function findMissingEntities(args) {
+    if (!args.query || typeof args.query !== 'object') {
+        return { events: [], properties: [] };
+    }
+    const refs = collectReferencedEntities(args.query);
+    const missingEvents = dedupe(refs.events.filter((name) => name && !args.existingEventNames.has(name)));
+    const missingProperties = dedupe(refs.properties.filter((name) => name && !args.existingPropertyNames.has(name)));
+    return { events: missingEvents, properties: missingProperties };
+}
+function collectReferencedEntities(query) {
+    const events = [];
+    const properties = [];
+    switch (query.kind) {
+        case 'TrendsQuery':
+        case 'FunnelsQuery': {
+            const series = query.series ?? [];
+            for (const s of series)
+                if (s?.event)
+                    events.push(s.event);
+            const breakdown = query
+                .breakdownFilter?.breakdown;
+            if (typeof breakdown === 'string')
+                properties.push(breakdown);
+            else if (Array.isArray(breakdown))
+                properties.push(...breakdown.filter((b) => typeof b === 'string'));
+            // Top-level filter clauses
+            const filters = query.properties ?? [];
+            for (const f of filters)
+                if (f?.key)
+                    properties.push(f.key);
+            break;
+        }
+        case 'RetentionQuery': {
+            const rf = query.retentionFilter ?? {};
+            const target = rf.targetEntity?.id ?? rf.targetEntity?.name;
+            const returning = rf.returningEntity?.id ?? rf.returningEntity?.name;
+            if (target)
+                events.push(target);
+            if (returning)
+                events.push(returning);
+            break;
+        }
+        case 'HogQLQuery': {
+            const sql = query.query ?? '';
+            // event = '<name>' or event IN ('<a>', '<b>') — capture the literals.
+            const eqMatches = sql.matchAll(/\bevent\s*=\s*'([^']+)'/gi);
+            for (const m of eqMatches)
+                if (m[1])
+                    events.push(m[1]);
+            const inMatches = sql.matchAll(/\bevent\s+in\s*\(([^)]+)\)/gi);
+            for (const m of inMatches) {
+                for (const lit of (m[1] ?? '').matchAll(/'([^']+)'/g)) {
+                    if (lit[1])
+                        events.push(lit[1]);
+                }
+            }
+            // properties.<name> or properties['<name>'] — capture property keys.
+            const dotProps = sql.matchAll(/\bproperties\.([A-Za-z_$][A-Za-z0-9_$]*)/g);
+            for (const m of dotProps)
+                if (m[1])
+                    properties.push(m[1]);
+            const bracketProps = sql.matchAll(/\bproperties\[['"]([^'"]+)['"]\]/g);
+            for (const m of bracketProps)
+                if (m[1])
+                    properties.push(m[1]);
+            break;
+        }
+        default:
+            // Unknown kind — return empty rather than over-warn.
+            break;
+    }
+    return { events: dedupe(events), properties: dedupe(properties) };
+}
+function dedupe(arr) {
+    return Array.from(new Set(arr));
+}
+/**
+ * Render the human-readable "Waiting for..." prefix that the analytics
+ * reviewer prepends to an insight's `viz_description` when entities are
+ * missing. Pulled out as a tiny helper so the reviewer code stays terse
+ * and the wording is centralised for future tweaking.
+ */
+function buildWaitingPrefix(missing) {
+    if (missing.events.length === 0 && missing.properties.length === 0) {
+        return null;
+    }
+    const parts = [];
+    if (missing.events.length > 0) {
+        const list = formatList(missing.events.map((e) => `\`${e}\``));
+        parts.push(`⏳ Waiting for ${list} to start firing`);
+    }
+    if (missing.properties.length > 0) {
+        const list = formatList(missing.properties.map((p) => `\`${p}\``));
+        parts.push(missing.events.length > 0
+            ? `(and property ${list} to be sent)`
+            : `⏳ Waiting for property ${list} to be sent`);
+    }
+    return `${parts.join(' ')}. Once instrumentation lands the chart will populate.`;
+}
+function formatList(items) {
+    if (items.length === 0)
+        return '';
+    if (items.length === 1)
+        return items[0];
+    if (items.length === 2)
+        return `${items[0]} and ${items[1]}`;
+    return `${items.slice(0, -1).join(', ')}, and ${items[items.length - 1]}`;
+}
+
 // EXTERNAL MODULE: external "node:crypto"
 var external_node_crypto_ = __nccwpck_require__(7598);
 ;// CONCATENATED MODULE: ./src/state.ts
@@ -52103,6 +52237,7 @@ function makePlanKey(args) {
 
 
 
+
 async function runAnalyticsReviewer(args) {
     const { claude, github, posthog, pr, summary, priorState, newState } = args;
     if (!summary.relevantProducts.includes('product_analytics')) {
@@ -52116,12 +52251,16 @@ async function runAnalyticsReviewer(args) {
         };
     }
     // 1. Find existing events on surfaces this PR touches.
-    const keywords = dedupe([
+    const keywords = analytics_reviewer_dedupe([
         ...summary.surfaces,
         ...summary.extendsFeatures,
         ...summary.capabilities.flatMap(splitToWords),
     ]).slice(0, 8);
     const existingEvents = await posthog.findExistingEvents(keywords);
+    // Pre-flatten event + property name sets so each insight's "missing
+    // entities" scan stays O(refs) rather than O(refs × events).
+    const existingEventNames = new Set(existingEvents.map((e) => e.name));
+    const existingPropertyNames = new Set(existingEvents.flatMap((e) => e.properties.map((p) => p.name)));
     // 2. Scan nearby tracking calls.
     const nearbyCalls = await collectNearbyTrackingCalls(github, summary, pr);
     // 3. Pick the insight budget.
@@ -52231,10 +52370,24 @@ async function runAnalyticsReviewer(args) {
                 if (!validated) {
                     console.warn(`[analytics] Insight "${spec.description.slice(0, 60)}" failed validator: ${validationError}`);
                 }
+                // Detect references to events/properties the project hasn't seen
+                // and prefix the visible description with a "⏳ Waiting for X"
+                // marker. This is forward-looking insights' biggest UX problem:
+                // the bot creates a chart for an event the developer hasn't
+                // instrumented yet, so the chart renders empty and there's no
+                // signal to the viewer about why. The marker makes that explicit.
+                const missing = findMissingEntities({
+                    query: result.query,
+                    existingEventNames,
+                    existingPropertyNames,
+                });
+                const waitingPrefix = buildWaitingPrefix(missing);
                 insightPlan = {
                     name: result.viz_title,
                     planKey: key,
-                    description: result.viz_description,
+                    description: waitingPrefix
+                        ? `${waitingPrefix}\n\n${result.viz_description}`
+                        : result.viz_description,
                     type: result.insight_type,
                     query: result.query,
                     dashboardName: spec.dashboardName,
@@ -52463,7 +52616,7 @@ function defaultDashboardName(summary) {
 function capitalize(s) {
     return s.length === 0 ? s : s[0].toUpperCase() + s.slice(1);
 }
-function dedupe(arr) {
+function analytics_reviewer_dedupe(arr) {
     return Array.from(new Set(arr));
 }
 function splitToWords(s) {
@@ -53024,7 +53177,7 @@ function humanKind(k) {
 }
 
 ;// CONCATENATED MODULE: ./package.json
-const package_namespaceObject = /*#__PURE__*/JSON.parse('{"UU":"posthog-pr-autonomy-bot","rE":"0.2.1"}');
+const package_namespaceObject = /*#__PURE__*/JSON.parse('{"UU":"posthog-pr-autonomy-bot","rE":"0.2.2"}');
 ;// CONCATENATED MODULE: ./src/version.ts
 /**
  * Version stamp for the bot. Read at startup and logged so a CI run's

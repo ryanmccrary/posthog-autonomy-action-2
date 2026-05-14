@@ -1,6 +1,10 @@
 import type { ClaudeClient } from '../claude.js';
 import type { GitHubClient } from '../github.js';
 import { describeToInsight } from '../insight-service/index.js';
+import {
+  buildWaitingPrefix,
+  findMissingEntities,
+} from '../insight-service/referenced-entities.js';
 import type { PostHogClient, ExistingEvent } from '../posthog/client.js';
 import { loadPrompt } from '../prompts.js';
 import { stripUntrustedMarkdown } from '../sanitize.js';
@@ -90,6 +94,12 @@ export async function runAnalyticsReviewer(args: {
     ...summary.capabilities.flatMap(splitToWords),
   ]).slice(0, 8);
   const existingEvents = await posthog.findExistingEvents(keywords);
+  // Pre-flatten event + property name sets so each insight's "missing
+  // entities" scan stays O(refs) rather than O(refs × events).
+  const existingEventNames = new Set(existingEvents.map((e) => e.name));
+  const existingPropertyNames = new Set(
+    existingEvents.flatMap((e) => e.properties.map((p) => p.name)),
+  );
 
   // 2. Scan nearby tracking calls.
   const nearbyCalls = await collectNearbyTrackingCalls(github, summary, pr);
@@ -212,10 +222,25 @@ export async function runAnalyticsReviewer(args: {
             `[analytics] Insight "${spec.description.slice(0, 60)}" failed validator: ${validationError}`,
           );
         }
+        // Detect references to events/properties the project hasn't seen
+        // and prefix the visible description with a "⏳ Waiting for X"
+        // marker. This is forward-looking insights' biggest UX problem:
+        // the bot creates a chart for an event the developer hasn't
+        // instrumented yet, so the chart renders empty and there's no
+        // signal to the viewer about why. The marker makes that explicit.
+        const missing = findMissingEntities({
+          query: result.query,
+          existingEventNames,
+          existingPropertyNames,
+        });
+        const waitingPrefix = buildWaitingPrefix(missing);
+
         insightPlan = {
           name: result.viz_title,
           planKey: key,
-          description: result.viz_description,
+          description: waitingPrefix
+            ? `${waitingPrefix}\n\n${result.viz_description}`
+            : result.viz_description,
           type: result.insight_type,
           query: result.query,
           dashboardName: spec.dashboardName,
