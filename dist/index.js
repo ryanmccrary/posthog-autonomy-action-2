@@ -52906,12 +52906,19 @@ function annotate(s, anchorIndex, ctx) {
     if (!validLines) {
         return { ...s, valid: false, rejection: `path "${s.path}" not in PR diff` };
     }
-    // Both endpoints must be inside at least one hunk of the file's diff.
-    if (!validLines.has(s.startLine) || !validLines.has(s.endLine)) {
+    // Every line in the range must be inside a hunk. If any line is outside,
+    // GitHub renders a broken horizontal line-number bar instead of the normal
+    // inline gutter.
+    const missing = [];
+    for (let ln = s.startLine; ln <= s.endLine; ln++) {
+        if (!validLines.has(ln))
+            missing.push(ln);
+    }
+    if (missing.length > 0) {
         return {
             ...s,
             valid: false,
-            rejection: `lines ${s.startLine}-${s.endLine} not inside a changed hunk of ${s.path}`,
+            rejection: `line(s) ${missing.join(',')} not inside a changed hunk of ${s.path} (range ${s.startLine}-${s.endLine})`,
         };
     }
     if (ctx.alreadyPostedFingerprints.has(suggestionFingerprint(s))) {
