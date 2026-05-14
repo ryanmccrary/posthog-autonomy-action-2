@@ -64,6 +64,23 @@ inputs:
     description: 'Anthropic model id.'
     required: false
     default: 'claude-opus-4-7'
+  pr-merged:
+    description: |
+      Set to "true" when the workflow is firing for a merged PR (pull_request
+      event with action=closed and pull_request.merged==true). Activates the
+      bot's promote-on-merge path:
+        1. Scan the merged diff for posthog.capture(...) / property-add
+           patterns matching events the bot previously suggested.
+        2. POST /event_definitions/ (and /property_definitions/) for each
+           match — idempotent, ignores 409 from PostHog when the def
+           already exists.
+        3. Re-run the analytics reviewer; insights whose ⏳ Waiting-for
+           prefix referenced a now-registered event get updated in place.
+        4. Record the merge commit sha in the bot's autonomy-state.
+      Wire it from the workflow with:
+        pr-merged: ${{ github.event.pull_request.merged == true && 'true' || 'false' }}
+    required: false
+    default: 'false'
 
 runs:
   using: 'node20'

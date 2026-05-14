@@ -173,7 +173,7 @@ export interface InsightPlan {
 }
 
 export interface CreatedResource {
-  kind: 'insight' | 'dashboard' | 'feature_flag';
+  kind: 'insight' | 'dashboard' | 'feature_flag' | 'event_definition' | 'property_definition';
   id: number | string;
   name: string;
   url: string;

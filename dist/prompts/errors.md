@@ -49,6 +49,10 @@ contains a try/except, fetch/then, or any error-handling path that should
 report to PostHog, emit a committable suggestion replacing those lines with the
 wrapped version. These patches are the most actionable output you can produce.
 
+**Every line in the anchor range must be inside a changed hunk** of the diff.
+If your range includes even one unchanged line outside any `@@` hunk, GitHub
+renders a broken display. When in doubt, shrink the range to only the changed lines.
+
 Confidence calibration:
 - Tight wrap of a single-line failure path you can see in the diff: 0.85+
 - Adding capture_exception to an existing except block: 0.75-0.9

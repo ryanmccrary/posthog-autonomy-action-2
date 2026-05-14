@@ -1,0 +1,57 @@
+name: PostHog Autonomy Review
+
+# Reference workflow showing how consumers wire this action. Two trigger
+# moments matter:
+#
+#   1. opened / synchronize / reopened / ready_for_review
+#       → normal review pass. Posts inline suggestions, creates insights
+#         with "⏳ Waiting for X" prefix for any insight that references
+#         an event the project hasn't ingested yet.
+#
+#   2. closed (filtered to pull_request.merged == true)
+#       → promote-on-merge pass. Reads the bot's prior autonomy-state
+#         from its own PR comment, scans the merged diff for
+#         posthog.capture(...) calls matching previously-suggested
+#         events, calls POST /event_definitions/ (and
+#         /property_definitions/) to pre-register them, then re-runs the
+#         analytics reviewer so insights drop their ⏳ prefix and start
+#         pointing at real schema.
+#
+# Both trigger moments use the same `pull_request` event (NOT
+# `pull_request_target`), so secrets remain available for internal
+# contributors and unavailable for fork PRs — by design.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, closed]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  review:
+    # Skip drafts. On the close event we ONLY want to run when the PR was
+    # actually merged — closed-without-merge doesn't need the promote pass.
+    if: >-
+      github.event.pull_request.draft == false &&
+      (github.event.action != 'closed' || github.event.pull_request.merged == true)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: PostHog/pr-autonomy-bot@main   # or pin to a SHA / tag
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+          posthog-personal-api-key: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          posthog-host: ${{ vars.POSTHOG_HOST }}
+          posthog-project-id: ${{ vars.POSTHOG_PROJECT_ID }}
+          posthog-mcp-url: ${{ vars.POSTHOG_MCP_URL }}
+          slack-bot-token: ${{ secrets.SLACK_BOT_TOKEN }}
+          # Promote-on-merge: true on close+merge, false everywhere else.
+          pr-merged: ${{ github.event.pull_request.merged == true && 'true' || 'false' }}
+          # Inline suggestion knobs (optional — defaults shown):
+          enable-inline-suggestions: 'true'
+          suggestion-confidence-threshold: '0.65'
+          suggestion-max: '12'

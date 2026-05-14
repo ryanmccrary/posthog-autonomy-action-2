@@ -49,6 +49,10 @@ insertions. These are committable code patches — the most actionable output yo
 can produce. Suggest a log insertion whenever you can see the function or branch
 in the diff and the anchor falls inside a changed hunk.
 
+**Every line in the anchor range must be inside a changed hunk** of the diff.
+If your range includes even one unchanged line outside any `@@` hunk, GitHub
+renders a broken display. When in doubt, shrink the range to only the changed lines.
+
 Confidence: 0.7-0.9 when the call site is visible in the diff. Only drop below
 0.65 if you truly have to guess the location.
 

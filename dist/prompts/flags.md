@@ -62,6 +62,10 @@ Output a single JSON object:
 Actively look for opportunities to emit inline suggestions — these committable
 patches are the most actionable output. Produce a suggestion whenever you can
 see the relevant line(s) in the diff and the anchor falls inside a changed hunk.
+**Every line in the anchor range must be inside a changed hunk** of the diff.
+If your range includes even one unchanged line outside any `@@` hunk, GitHub
+renders a broken display. When in doubt, shrink the range to only the changed lines.
+
 Three sub-kinds:
 
 - `flag_constant_register` — when a `constants` file is visible in the diff
