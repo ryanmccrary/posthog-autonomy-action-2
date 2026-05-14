@@ -14,12 +14,18 @@ import {
   validateSuggestions,
 } from './inline-suggestions.js';
 import { emptyState, parseStateFromComment, type ReviewState } from './state.js';
+import { versionTag } from './version.js';
 import type { ReviewerName } from './config.js';
 import type { InlineSuggestion, ReviewerOutput } from './types.js';
 
 const COMMENT_MARKER = '<!-- posthog-pr-autonomy-bot -->';
 
 async function main(): Promise<void> {
+  // First line of every run — pin this in your eyes when verifying which
+  // version of the action is deployed (or `grep "posthog-pr-autonomy-bot v"
+  // run.log` after the fact).
+  console.log(`[autonomy-bot] ${versionTag()}`);
+
   const config = loadConfig();
 
   const github = new GitHubClient(config.githubToken, config.githubRepository);
