@@ -30,6 +30,27 @@ export interface ReviewState {
    * line-anchored comment on synchronize events.
    */
   postedSuggestions?: string[];
+  /**
+   * Event names the analytics reviewer suggested adding (either as new
+   * captures or extensions to existing capture calls). The promote-on-merge
+   * path reads this from priorState and matches against the merged diff to
+   * decide which event definitions to pre-register.
+   */
+  suggestedEvents?: string[];
+  /**
+   * Property names the analytics reviewer suggested adding to existing
+   * capture calls. Mirrors suggestedEvents but for property definitions.
+   */
+  suggestedProperties?: string[];
+  /**
+   * Promote-on-merge bookkeeping. Set by the orchestrator's merge path
+   * when pull_request.merged === true:
+   *   - mergeCommitSha: the merge commit on the base branch
+   *   - promotedAt: ISO timestamp of when the promotion ran
+   * Both unset on normal review runs.
+   */
+  mergeCommitSha?: string;
+  promotedAt?: string;
 }
 
 export function emptyState(): ReviewState {
@@ -53,6 +74,14 @@ export function parseStateFromComment(body: string | null | undefined): ReviewSt
       postedSuggestions: Array.isArray(parsed.postedSuggestions)
         ? parsed.postedSuggestions.filter((s): s is string => typeof s === 'string')
         : [],
+      suggestedEvents: Array.isArray(parsed.suggestedEvents)
+        ? parsed.suggestedEvents.filter((s): s is string => typeof s === 'string')
+        : [],
+      suggestedProperties: Array.isArray(parsed.suggestedProperties)
+        ? parsed.suggestedProperties.filter((s): s is string => typeof s === 'string')
+        : [],
+      mergeCommitSha: typeof parsed.mergeCommitSha === 'string' ? parsed.mergeCommitSha : undefined,
+      promotedAt: typeof parsed.promotedAt === 'string' ? parsed.promotedAt : undefined,
     };
   } catch {
     return emptyState();

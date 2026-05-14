@@ -303,6 +303,123 @@ export class PostHogClient {
     });
   }
 
+  /**
+   * Pre-register an event definition with `created_at: null` and
+   * `last_seen_at: null` — the same shape the PostHog UI uses when a human
+   * clicks "New event" on `/data-management/events/new`. Lets the bot
+   * register the events it suggested BEFORE they've actually been ingested,
+   * so insights that reference them stop being "phantom" in the UI.
+   *
+   * Idempotent semantics: PostHog rejects duplicate names with a 4xx; we
+   * swallow that and look the existing def up by name so callers can
+   * re-run the merge path safely.
+   *
+   * MCP: there's an `event-definition-update` tool but no `event-definition-create`,
+   * so this is REST-only.
+   */
+  async createEventDefinition(args: { name: string; prUrl: string }): Promise<CreatedResource> {
+    const body: Record<string, unknown> = {
+      name: args.name,
+      // The PostHog UI sets these to null when registering pre-ingestion, so
+      // the new def doesn't claim to have a last-seen-at timestamp.
+      created_at: null,
+      last_seen_at: null,
+      tags: ['auto-registered', 'pr-autonomy-bot'],
+    };
+
+    const existing = await this.findEventDefinitionByName(args.name);
+    if (existing) {
+      return {
+        kind: 'event_definition',
+        id: existing.id,
+        name: existing.name,
+        url: `${this.host}/project/${this.projectId}/data-management/events/${existing.id}`,
+      };
+    }
+
+    try {
+      const res = await this.rest.fetchJson<{ id: string; name: string }>(
+        `/api/projects/${this.projectId}/event_definitions/`,
+        { method: 'POST', body },
+      );
+      return {
+        kind: 'event_definition',
+        id: res.id,
+        name: res.name,
+        url: `${this.host}/project/${this.projectId}/data-management/events/${res.id}`,
+      };
+    } catch (err) {
+      // Race: another call registered the same name between our check and POST.
+      // Re-fetch and return that one.
+      const after = await this.findEventDefinitionByName(args.name);
+      if (after) {
+        return {
+          kind: 'event_definition',
+          id: after.id,
+          name: after.name,
+          url: `${this.host}/project/${this.projectId}/data-management/events/${after.id}`,
+        };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * Pre-register a property definition scoped to one or more events. Used
+   * during promote-on-merge for properties the bot suggested adding alongside
+   * existing capture calls (e.g. `trigger_type` on `hog_flow_created`).
+   *
+   * MCP: no first-party create tool — REST-only.
+   */
+  async createPropertyDefinition(args: {
+    name: string;
+    propertyType?: 'String' | 'Numeric' | 'Boolean' | 'DateTime';
+    eventNames?: string[];
+    prUrl: string;
+  }): Promise<CreatedResource> {
+    const body: Record<string, unknown> = {
+      name: args.name,
+      property_type: args.propertyType ?? 'String',
+    };
+    if (args.eventNames?.length) {
+      body.event_names = args.eventNames;
+    }
+
+    const existing = await this.findPropertyDefinitionByName(args.name);
+    if (existing) {
+      return {
+        kind: 'property_definition',
+        id: existing.id,
+        name: existing.name,
+        url: `${this.host}/project/${this.projectId}/data-management/properties/${existing.id}`,
+      };
+    }
+
+    try {
+      const res = await this.rest.fetchJson<{ id: string; name: string }>(
+        `/api/projects/${this.projectId}/property_definitions/`,
+        { method: 'POST', body },
+      );
+      return {
+        kind: 'property_definition',
+        id: res.id,
+        name: res.name,
+        url: `${this.host}/project/${this.projectId}/data-management/properties/${res.id}`,
+      };
+    } catch (err) {
+      const after = await this.findPropertyDefinitionByName(args.name);
+      if (after) {
+        return {
+          kind: 'property_definition',
+          id: after.id,
+          name: after.name,
+          url: `${this.host}/project/${this.projectId}/data-management/properties/${after.id}`,
+        };
+      }
+      throw err;
+    }
+  }
+
   /** MCP: create-feature-flag. Always creates DRAFT (inactive, 0% rollout). */
   async createDraftFeatureFlag(args: { key: string; name: string; description: string; prUrl: string }): Promise<CreatedResource> {
     const body = {
@@ -361,6 +478,45 @@ export class PostHogClient {
   private async viaMcp<T>(toolName: string, args: Record<string, unknown>): Promise<T> {
     if (!this.mcp) throw new MCPUnavailableError('No MCP transport configured');
     return this.mcp.callTool<T>(toolName, args);
+  }
+
+  /**
+   * Look up an event definition by exact name. Used as the idempotency check
+   * before `POST /event_definitions/` so re-runs of the merge path don't
+   * 4xx on already-registered events.
+   *
+   * PostHog's search is `contains`, so we filter to an exact match to avoid
+   * a partial substring (e.g. `hog_flow_created` vs `hog_flow_created_v2`).
+   */
+  private async findEventDefinitionByName(name: string): Promise<{ id: string; name: string } | null> {
+    interface EventDef { id: string; name: string }
+    const r = await this.safe(
+      () => this.viaMcp<{ results: EventDef[] }>('event-definition-list', {
+        search: name,
+        limit: 10,
+      }),
+      () => this.rest.fetchJson<{ results: EventDef[] }>(
+        `/api/projects/${this.projectId}/event_definitions/?search=${encodeURIComponent(name)}&limit=10`,
+      ),
+      { results: [] },
+    );
+    return (r.results ?? []).find((e) => e.name === name) ?? null;
+  }
+
+  /** Same shape as findEventDefinitionByName, for property definitions. */
+  private async findPropertyDefinitionByName(name: string): Promise<{ id: string; name: string } | null> {
+    interface PropDef { id: string; name: string }
+    const r = await this.safe(
+      () => this.viaMcp<{ results: PropDef[] }>('property-definition-list', {
+        search: name,
+        limit: 10,
+      }),
+      () => this.rest.fetchJson<{ results: PropDef[] }>(
+        `/api/projects/${this.projectId}/property_definitions/?search=${encodeURIComponent(name)}&limit=10`,
+      ),
+      { results: [] },
+    );
+    return (r.results ?? []).find((p) => p.name === name) ?? null;
   }
 }
 
