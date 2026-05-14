@@ -74,11 +74,14 @@ inputs:
         2. POST /event_definitions/ (and /property_definitions/) for each
            match — idempotent, ignores 409 from PostHog when the def
            already exists.
-        3. Re-run the analytics reviewer; insights whose ⏳ Waiting-for
-           prefix referenced a now-registered event get updated in place.
+        3. Re-run the analytics reviewer; insights whose Waiting-for prefix
+           referenced a now-registered event get updated in place.
         4. Record the merge commit sha in the bot's autonomy-state.
-      Wire it from the workflow with:
-        pr-merged: ${{ github.event.pull_request.merged == true && 'true' || 'false' }}
+      Wire it from the consumer workflow file (NOT here in action.yml —
+      GitHub evaluates github.* expressions inside any action.yml string
+      and they fail validation in this context). See the bundled
+      .github/workflows/pr-review.yml in the action's repo for the
+      ready-to-copy one-liner that derives this from the close event.
     required: false
     default: 'false'
 
