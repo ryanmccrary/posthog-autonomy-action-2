@@ -1,5 +1,6 @@
 import type { ClaudeClient } from '../claude.js';
 import type { GitHubClient } from '../github.js';
+import { describeToInsight } from '../insight-service/index.js';
 import type { PostHogClient, ExistingEvent } from '../posthog/client.js';
 import { loadPrompt } from '../prompts.js';
 import { stripUntrustedMarkdown } from '../sanitize.js';
@@ -16,13 +17,19 @@ import type {
   FeatureSummary,
   InlineSuggestion,
   InsightPlan,
+  InsightSpec,
   PullRequestContext,
   ReviewerOutput,
 } from '../types.js';
 
 interface AnalyticsLLMOutput {
   events: EventSuggestion[];
-  insights: InsightPlan[];
+  /**
+   * The model only emits NL specs now; the actual TrendsQuery / FunnelsQuery
+   * / RetentionQuery / HogQLQuery JSON is produced by the insight-service
+   * (classifier + typed generator) downstream. See `src/insight-service/`.
+   */
+  insights: InsightSpec[];
   dashboardPlanKey?: string;
   reasoning: string;
   schemaViolations: Array<{ location: string; issue: string; fix: string }>;
@@ -42,6 +49,10 @@ interface ResolvedInsight {
   newHash: string;
   /** Action that was taken on this run. */
   action: ResourceAction;
+  /** True if the dry-run validator confirmed PostHog accepts the query. */
+  validated: boolean;
+  /** If validation failed, the API's error string (truncated). */
+  validationError?: string;
 }
 
 export async function runAnalyticsReviewer(args: {
@@ -106,8 +117,9 @@ export async function runAnalyticsReviewer(args: {
 
   // Security (audit Finding 1): scrub markdown image/HTML/script injection
   // from every model-emitted prose field before we render or POST it. The
-  // insight `query` JSON and the inline `suggestion` body are intentionally
-  // NOT touched here — those are structured data / code, handled elsewhere.
+  // insight-service output (structured PostHog query JSON) and the inline
+  // `suggestion` body are intentionally NOT touched here — those are
+  // structured data / code, handled elsewhere.
   plan.reasoning = stripUntrustedMarkdown(plan.reasoning);
   for (const e of plan.events) {
     e.trigger = stripUntrustedMarkdown(e.trigger);
@@ -116,7 +128,9 @@ export async function runAnalyticsReviewer(args: {
     }
   }
   for (const i of plan.insights) {
-    i.name = stripUntrustedMarkdown(i.name);
+    // InsightSpec only carries the NL `description`; the classifier produces
+    // viz_title / viz_description, which the insight-service runs through
+    // its own sanitiser.
     i.description = stripUntrustedMarkdown(i.description);
   }
   for (const v of plan.schemaViolations ?? []) {
@@ -129,7 +143,8 @@ export async function runAnalyticsReviewer(args: {
     }
   }
 
-  // 5. Resolve insights: create vs update vs leave alone.
+  // 5. Resolve insights: classifier + typed generator + validator (the
+  //    NL → structured-query pipeline), THEN create vs update vs leave-alone.
   const resolved: ResolvedInsight[] = [];
   const obsoletePrior: PriorResource[] = [];
 
@@ -150,7 +165,6 @@ export async function runAnalyticsReviewer(args: {
       const dashName = plan.insights[0]?.dashboardName ?? defaultDashboardName(summary);
       try {
         if (prevDash) {
-          // Reuse the existing dashboard — we never auto-rename/update dashboards.
           dashboardResource = {
             kind: 'dashboard',
             id: prevDash.id,
@@ -171,44 +185,98 @@ export async function runAnalyticsReviewer(args: {
       }
     }
 
-    for (const insight of plan.insights.slice(0, insightBudget)) {
-      const key = insight.planKey || makePlanKey({ surface: summary.surfaces[0], name: insight.name });
-      insight.planKey = key;
-      const newHash = hashQuery(insight.query);
+    for (const spec of plan.insights.slice(0, insightBudget)) {
+      const key = spec.planKey || makePlanKey({ surface: summary.surfaces[0], name: spec.description });
+      spec.planKey = key;
+
+      // NL → structured-query pipeline. One classifier call + one typed
+      // generator call + an optional validator dry-run. The reviewer is no
+      // longer responsible for picking insight types or hand-crafting query
+      // JSON — that lives in src/insight-service/.
+      let insightPlan: InsightPlan;
+      let validated = false;
+      let validationError: string | undefined;
+      try {
+        const result = await describeToInsight({
+          claude,
+          posthog,
+          events: existingEvents,
+          description: spec.description,
+          prefer_type: spec.preferType,
+          validate: true,
+        });
+        validated = result.validated;
+        validationError = result.validation_error;
+        if (!validated) {
+          console.warn(
+            `[analytics] Insight "${spec.description.slice(0, 60)}" failed validator: ${validationError}`,
+          );
+        }
+        insightPlan = {
+          name: result.viz_title,
+          planKey: key,
+          description: result.viz_description,
+          type: result.insight_type,
+          query: result.query,
+          dashboardName: spec.dashboardName,
+        };
+      } catch (err) {
+        console.warn(`[analytics] describeToInsight failed for spec "${spec.description.slice(0, 60)}":`, err);
+        continue;
+      }
+
+      // If the dry-run failed and we're not creating an insight with a
+      // known-bad query, skip persistence — surface in the comment so the
+      // reviewer can iterate on the description.
+      if (!validated) {
+        resolved.push({
+          plan: insightPlan,
+          resource: {
+            kind: 'insight',
+            id: 0,
+            name: insightPlan.name,
+            url: '(not created — validator failed)',
+          },
+          newHash: hashQuery(insightPlan.query),
+          action: 'created',
+          validated: false,
+          validationError,
+        });
+        continue;
+      }
+
+      const newHash = hashQuery(insightPlan.query);
       const prev = prevByKey.get(key);
 
       try {
         if (prev && prev.queryHash === newHash) {
-          // Unchanged — leave as is, just re-link in the comment.
           resolved.push({
-            plan: insight,
+            plan: insightPlan,
             resource: { kind: 'insight', id: prev.id, name: prev.name, url: prev.url },
             newHash,
             action: 'unchanged',
+            validated: true,
           });
           newState.created.push({ ...prev, planKey: key, queryHash: newHash });
           prevByKey.delete(key);
         } else if (prev) {
-          // Query changed — PATCH the existing insight rather than creating a duplicate.
-          const updated = await posthog.updateInsight({ id: prev.id, plan: insight, prUrl: pr.url });
-          resolved.push({ plan: insight, resource: updated, newHash, action: 'updated' });
+          const updated = await posthog.updateInsight({ id: prev.id, plan: insightPlan, prUrl: pr.url });
+          resolved.push({ plan: insightPlan, resource: updated, newHash, action: 'updated', validated: true });
           newState.created.push({ ...updated, planKey: key, queryHash: newHash });
           prevByKey.delete(key);
         } else {
-          // New plan — create.
-          const created = await posthog.createInsight(insight, pr.url);
-          resolved.push({ plan: insight, resource: created, newHash, action: 'created' });
+          const created = await posthog.createInsight(insightPlan, pr.url);
+          resolved.push({ plan: insightPlan, resource: created, newHash, action: 'created', validated: true });
           newState.created.push({ ...created, planKey: key, queryHash: newHash });
           if (dashboardResource) {
             await posthog.addInsightToDashboard(created.id, dashboardResource.id);
           }
         }
       } catch (err) {
-        console.warn(`[analytics] Failed to resolve insight "${insight.name}":`, err);
+        console.warn(`[analytics] Failed to resolve insight "${insightPlan.name}":`, err);
       }
     }
 
-    // Whatever's still in prevByKey is in state but not in the current plan.
     for (const leftover of prevByKey.values()) obsoletePrior.push(leftover);
   }
 
@@ -360,8 +428,11 @@ function renderAnalyticsMarkdown(args: {
     for (const l of insightLines) lines.push(l);
   } else if (plan.insights.length) {
     lines.push('', '**Suggested insights** _(not auto-created)_');
-    for (const insight of plan.insights) {
-      lines.push(`- _${insight.name}_ — ${insight.description}`);
+    for (const spec of plan.insights) {
+      // InsightSpec only carries the NL description + planKey; the
+      // viz_title comes from the classifier and isn't available when
+      // create-resources is off.
+      lines.push(`- \`${spec.planKey}\` — ${spec.description}`);
     }
   }
 
@@ -379,8 +450,11 @@ function renderAnalyticsMarkdown(args: {
 }
 
 function renderInsightLine(r: ResolvedInsight): string {
+  if (!r.validated && r.resource.id === 0) {
+    return `- ⚠️ skipped — _${r.plan.name}_ (\`${r.plan.type}\`): ${r.validationError ?? 'validator failed'}`;
+  }
   const verb = r.action === 'unchanged' ? '↔ unchanged' : r.action === 'updated' ? '✏️ updated' : '✨ created';
-  return `- 📈 ${verb} — [${r.resource.name}](${r.resource.url})`;
+  return `- 📈 ${verb} \`${r.plan.type}\` — [${r.resource.name}](${r.resource.url})`;
 }
 
 function iconFor(kind: string): string {
