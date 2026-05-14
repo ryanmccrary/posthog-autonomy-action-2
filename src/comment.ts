@@ -22,8 +22,16 @@ export function renderFinalComment(args: {
   slackPlan: SlackOptInPlan;
   state: ReviewState;
   inlineReport?: InlineSuggestionReport;
+  /**
+   * Optional rendered markdown block from the promote-on-merge pass.
+   * Inserted near the top of the comment (after the feature summary) so
+   * the reader immediately sees what got registered. The orchestrator
+   * passes `renderPromotionMarkdown(promotionResult)`; omitted on normal
+   * non-merge runs.
+   */
+  promotionMarkdown?: string;
 }): string {
-  const { pr, productMix, outputs, slackPlan, state, inlineReport } = args;
+  const { pr, productMix, outputs, slackPlan, state, inlineReport, promotionMarkdown } = args;
 
   // Security (audit Finding 1): apply the markdown/HTML/script sanitizer at
   // the rendering boundary in addition to the reviewer-level sanitization in
@@ -59,6 +67,14 @@ export function renderFinalComment(args: {
     .join(', ');
   lines.push(`<sub>Enabled PostHog products on this project: ${enabledList || '_none detected_'}</sub>`);
   lines.push('');
+
+  // Promote-on-merge surfacing — appears right after the feature summary
+  // so the reader doesn't have to scroll past suggestions they already
+  // acted on to find what got registered.
+  if (promotionMarkdown) {
+    lines.push(promotionMarkdown);
+    lines.push('');
+  }
 
   if (applicable.length === 0) {
     lines.push(

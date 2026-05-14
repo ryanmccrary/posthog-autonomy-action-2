@@ -147,6 +147,16 @@ export async function runAnalyticsReviewer(args: {
     v.issue = stripUntrustedMarkdown(v.issue);
     v.fix = stripUntrustedMarkdown(v.fix);
   }
+  // Record suggested event + property names on newState so the promote-on-
+  // merge path (src/promote.ts) can match them against the merged diff
+  // without having to regex-parse the bot's own markdown.
+  const suggestedEventNames = dedupe(plan.events.map((e) => e.name).filter(Boolean));
+  const suggestedPropertyNames = dedupe(
+    plan.events.flatMap((e) => e.properties?.map((p) => p.name) ?? []).filter(Boolean),
+  );
+  newState.suggestedEvents = mergeUnique(priorState.suggestedEvents ?? [], suggestedEventNames);
+  newState.suggestedProperties = mergeUnique(priorState.suggestedProperties ?? [], suggestedPropertyNames);
+
   if (plan.inlineSuggestions) {
     for (const s of plan.inlineSuggestions) {
       s.explanation = stripUntrustedMarkdown(s.explanation);
@@ -506,6 +516,17 @@ function capitalize(s: string): string {
 
 function dedupe<T>(arr: T[]): T[] {
   return Array.from(new Set(arr));
+}
+
+/**
+ * Union of two string arrays, deduped. Used to carry forward suggested
+ * events / properties across runs so a re-run on a different commit still
+ * sees what the bot proposed earlier — relevant for promote-on-merge,
+ * which trusts the cumulative suggestion history rather than just the
+ * current run's output.
+ */
+function mergeUnique(a: readonly string[], b: readonly string[]): string[] {
+  return Array.from(new Set([...a, ...b]));
 }
 
 function splitToWords(s: string): string[] {

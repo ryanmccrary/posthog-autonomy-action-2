@@ -68,6 +68,23 @@ const configSchema = z.object({
   /** Cap on how many inline suggestions to post in one review. */
   suggestionMax: z.coerce.number().int().positive().default(12),
 
+  /**
+   * True when the workflow is firing for a merged PR (close event with
+   * `pull_request.merged === true`). When true the bot runs the
+   * "promote-on-merge" path:
+   *   1. Scan the merged diff for `posthog.capture(...)` calls matching
+   *      events the bot previously suggested.
+   *   2. Pre-register them via `POST /event_definitions/` (and any newly-
+   *      added properties via `POST /property_definitions/`).
+   *   3. Re-run the analytics reviewer so insights drop their ⏳ Waiting-for
+   *      prefix now that the schema exists.
+   *   4. Record the merge commit sha in autonomy-state.
+   *
+   * Wired from the workflow as:
+   *   pr-merged: ${{ github.event.pull_request.merged == true && 'true' || 'false' }}
+   */
+  prMerged: z.coerce.boolean().default(false),
+
   slackBotToken: z.string().optional(),
 });
 
@@ -92,6 +109,13 @@ export function loadConfig(): Config {
     enableInlineSuggestions: input('enable-inline-suggestions', 'ENABLE_INLINE_SUGGESTIONS'),
     suggestionConfidenceThreshold: input('suggestion-confidence-threshold', 'SUGGESTION_CONFIDENCE_THRESHOLD'),
     suggestionMax: input('suggestion-max', 'SUGGESTION_MAX'),
+    // pr-merged comes from the workflow expression
+    // ${{ github.event.pull_request.merged == true && 'true' || 'false' }}.
+    // It's an action input rather than something we infer from the GH context
+    // here so the orchestrator decision is explicit in the workflow file —
+    // makes it obvious to anyone reading the YAML when the bot enters its
+    // promote-on-merge path.
+    prMerged: input('pr-merged', 'PR_MERGED'),
     slackBotToken: input('slack-bot-token', 'SLACK_BOT_TOKEN'),
   });
 }

@@ -13,6 +13,7 @@ import {
   suggestionFingerprint,
   validateSuggestions,
 } from './inline-suggestions.js';
+import { renderPromotionMarkdown, runPromotion, type PromotionResult } from './promote.js';
 import { emptyState, parseStateFromComment, type ReviewState } from './state.js';
 import { versionTag } from './version.js';
 import type { ReviewerName } from './config.js';
@@ -49,6 +50,36 @@ async function main(): Promise<void> {
   const newState: ReviewState = emptyState();
   if (priorState.created.length) {
     console.log(`[autonomy-bot] Recovered ${priorState.created.length} prior resource(s) from comment`);
+  }
+
+  // Promote-on-merge: pre-register the events/properties the bot suggested
+  // during review that now appear in the merged diff. Runs BEFORE the
+  // reviewer so the registered events show up in findExistingEvents() and
+  // the reviewer's findMissingEntities() check passes — that's what causes
+  // affected insights to lose their "⏳ Waiting for X" prefix on this pass.
+  let promotionResult: PromotionResult | null = null;
+  if (config.prMerged) {
+    console.log('[autonomy-bot] PR is merged — running promote-on-merge pass');
+    const suggestedEventNames = new Set(priorState.suggestedEvents ?? []);
+    const suggestedPropertyNames = new Set(priorState.suggestedProperties ?? []);
+    if (suggestedEventNames.size === 0 && suggestedPropertyNames.size === 0) {
+      console.log('[autonomy-bot] No prior suggestions in state — skipping promotion');
+    } else {
+      console.log(
+        `[autonomy-bot] Prior suggestions: ${suggestedEventNames.size} event(s), ${suggestedPropertyNames.size} property/ies`,
+      );
+      promotionResult = await runPromotion({
+        pr,
+        posthog,
+        priorSuggestions: { suggestedEventNames, suggestedPropertyNames },
+      });
+      console.log(
+        `[autonomy-bot] Promotion: registered ${promotionResult.registeredEvents.length} event(s), ${promotionResult.registeredProperties.length} property/ies, ${promotionResult.notLanded.length} not landed`,
+      );
+      // Record the merge sha + timestamp on newState for re-run idempotency.
+      newState.mergeCommitSha = pr.headSha;
+      newState.promotedAt = new Date().toISOString();
+    }
   }
 
   console.log('[autonomy-bot] Detecting customer product mix');
@@ -186,6 +217,7 @@ async function main(): Promise<void> {
     slackPlan,
     state: newState,
     inlineReport,
+    promotionMarkdown: promotionResult ? renderPromotionMarkdown(promotionResult) : undefined,
   });
 
   console.log('[autonomy-bot] Posting / updating PR comment');

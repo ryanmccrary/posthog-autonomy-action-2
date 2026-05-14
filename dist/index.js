@@ -42728,6 +42728,22 @@ const configSchema = objectType({
     suggestionConfidenceThreshold: coerce.number().min(0).max(1).default(0.65),
     /** Cap on how many inline suggestions to post in one review. */
     suggestionMax: coerce.number().int().positive().default(12),
+    /**
+     * True when the workflow is firing for a merged PR (close event with
+     * `pull_request.merged === true`). When true the bot runs the
+     * "promote-on-merge" path:
+     *   1. Scan the merged diff for `posthog.capture(...)` calls matching
+     *      events the bot previously suggested.
+     *   2. Pre-register them via `POST /event_definitions/` (and any newly-
+     *      added properties via `POST /property_definitions/`).
+     *   3. Re-run the analytics reviewer so insights drop their ⏳ Waiting-for
+     *      prefix now that the schema exists.
+     *   4. Record the merge commit sha in autonomy-state.
+     *
+     * Wired from the workflow as:
+     *   pr-merged: ${{ github.event.pull_request.merged == true && 'true' || 'false' }}
+     */
+    prMerged: coerce.boolean().default(false),
     slackBotToken: stringType().optional(),
 });
 function loadConfig() {
@@ -42749,6 +42765,13 @@ function loadConfig() {
         enableInlineSuggestions: input('enable-inline-suggestions', 'ENABLE_INLINE_SUGGESTIONS'),
         suggestionConfidenceThreshold: input('suggestion-confidence-threshold', 'SUGGESTION_CONFIDENCE_THRESHOLD'),
         suggestionMax: input('suggestion-max', 'SUGGESTION_MAX'),
+        // pr-merged comes from the workflow expression
+        // ${{ github.event.pull_request.merged == true && 'true' || 'false' }}.
+        // It's an action input rather than something we infer from the GH context
+        // here so the orchestrator decision is explicit in the workflow file —
+        // makes it obvious to anyone reading the YAML when the bot enters its
+        // promote-on-merge path.
+        prMerged: input('pr-merged', 'PR_MERGED'),
         slackBotToken: input('slack-bot-token', 'SLACK_BOT_TOKEN'),
     });
 }
@@ -51513,6 +51536,108 @@ class PostHogClient {
             body,
         });
     }
+    /**
+     * Pre-register an event definition with `created_at: null` and
+     * `last_seen_at: null` — the same shape the PostHog UI uses when a human
+     * clicks "New event" on `/data-management/events/new`. Lets the bot
+     * register the events it suggested BEFORE they've actually been ingested,
+     * so insights that reference them stop being "phantom" in the UI.
+     *
+     * Idempotent semantics: PostHog rejects duplicate names with a 4xx; we
+     * swallow that and look the existing def up by name so callers can
+     * re-run the merge path safely.
+     *
+     * MCP: there's an `event-definition-update` tool but no `event-definition-create`,
+     * so this is REST-only.
+     */
+    async createEventDefinition(args) {
+        const body = {
+            name: args.name,
+            // The PostHog UI sets these to null when registering pre-ingestion, so
+            // the new def doesn't claim to have a last-seen-at timestamp.
+            created_at: null,
+            last_seen_at: null,
+            tags: ['auto-registered', 'pr-autonomy-bot'],
+        };
+        const existing = await this.findEventDefinitionByName(args.name);
+        if (existing) {
+            return {
+                kind: 'event_definition',
+                id: existing.id,
+                name: existing.name,
+                url: `${this.host}/project/${this.projectId}/data-management/events/${existing.id}`,
+            };
+        }
+        try {
+            const res = await this.rest.fetchJson(`/api/projects/${this.projectId}/event_definitions/`, { method: 'POST', body });
+            return {
+                kind: 'event_definition',
+                id: res.id,
+                name: res.name,
+                url: `${this.host}/project/${this.projectId}/data-management/events/${res.id}`,
+            };
+        }
+        catch (err) {
+            // Race: another call registered the same name between our check and POST.
+            // Re-fetch and return that one.
+            const after = await this.findEventDefinitionByName(args.name);
+            if (after) {
+                return {
+                    kind: 'event_definition',
+                    id: after.id,
+                    name: after.name,
+                    url: `${this.host}/project/${this.projectId}/data-management/events/${after.id}`,
+                };
+            }
+            throw err;
+        }
+    }
+    /**
+     * Pre-register a property definition scoped to one or more events. Used
+     * during promote-on-merge for properties the bot suggested adding alongside
+     * existing capture calls (e.g. `trigger_type` on `hog_flow_created`).
+     *
+     * MCP: no first-party create tool — REST-only.
+     */
+    async createPropertyDefinition(args) {
+        const body = {
+            name: args.name,
+            property_type: args.propertyType ?? 'String',
+        };
+        if (args.eventNames?.length) {
+            body.event_names = args.eventNames;
+        }
+        const existing = await this.findPropertyDefinitionByName(args.name);
+        if (existing) {
+            return {
+                kind: 'property_definition',
+                id: existing.id,
+                name: existing.name,
+                url: `${this.host}/project/${this.projectId}/data-management/properties/${existing.id}`,
+            };
+        }
+        try {
+            const res = await this.rest.fetchJson(`/api/projects/${this.projectId}/property_definitions/`, { method: 'POST', body });
+            return {
+                kind: 'property_definition',
+                id: res.id,
+                name: res.name,
+                url: `${this.host}/project/${this.projectId}/data-management/properties/${res.id}`,
+            };
+        }
+        catch (err) {
+            const after = await this.findPropertyDefinitionByName(args.name);
+            if (after) {
+                return {
+                    kind: 'property_definition',
+                    id: after.id,
+                    name: after.name,
+                    url: `${this.host}/project/${this.projectId}/data-management/properties/${after.id}`,
+                };
+            }
+            throw err;
+        }
+    }
     /** MCP: create-feature-flag. Always creates DRAFT (inactive, 0% rollout). */
     async createDraftFeatureFlag(args) {
         const body = {
@@ -51562,6 +51687,29 @@ class PostHogClient {
         if (!this.mcp)
             throw new MCPUnavailableError('No MCP transport configured');
         return this.mcp.callTool(toolName, args);
+    }
+    /**
+     * Look up an event definition by exact name. Used as the idempotency check
+     * before `POST /event_definitions/` so re-runs of the merge path don't
+     * 4xx on already-registered events.
+     *
+     * PostHog's search is `contains`, so we filter to an exact match to avoid
+     * a partial substring (e.g. `hog_flow_created` vs `hog_flow_created_v2`).
+     */
+    async findEventDefinitionByName(name) {
+        const r = await this.safe(() => this.viaMcp('event-definition-list', {
+            search: name,
+            limit: 10,
+        }), () => this.rest.fetchJson(`/api/projects/${this.projectId}/event_definitions/?search=${encodeURIComponent(name)}&limit=10`), { results: [] });
+        return (r.results ?? []).find((e) => e.name === name) ?? null;
+    }
+    /** Same shape as findEventDefinitionByName, for property definitions. */
+    async findPropertyDefinitionByName(name) {
+        const r = await this.safe(() => this.viaMcp('property-definition-list', {
+            search: name,
+            limit: 10,
+        }), () => this.rest.fetchJson(`/api/projects/${this.projectId}/property_definitions/?search=${encodeURIComponent(name)}&limit=10`), { results: [] });
+        return (r.results ?? []).find((p) => p.name === name) ?? null;
     }
 }
 /**
@@ -52183,6 +52331,14 @@ function parseStateFromComment(body) {
             postedSuggestions: Array.isArray(parsed.postedSuggestions)
                 ? parsed.postedSuggestions.filter((s) => typeof s === 'string')
                 : [],
+            suggestedEvents: Array.isArray(parsed.suggestedEvents)
+                ? parsed.suggestedEvents.filter((s) => typeof s === 'string')
+                : [],
+            suggestedProperties: Array.isArray(parsed.suggestedProperties)
+                ? parsed.suggestedProperties.filter((s) => typeof s === 'string')
+                : [],
+            mergeCommitSha: typeof parsed.mergeCommitSha === 'string' ? parsed.mergeCommitSha : undefined,
+            promotedAt: typeof parsed.promotedAt === 'string' ? parsed.promotedAt : undefined,
         };
     }
     catch {
@@ -52304,6 +52460,13 @@ async function runAnalyticsReviewer(args) {
         v.issue = stripUntrustedMarkdown(v.issue);
         v.fix = stripUntrustedMarkdown(v.fix);
     }
+    // Record suggested event + property names on newState so the promote-on-
+    // merge path (src/promote.ts) can match them against the merged diff
+    // without having to regex-parse the bot's own markdown.
+    const suggestedEventNames = analytics_reviewer_dedupe(plan.events.map((e) => e.name).filter(Boolean));
+    const suggestedPropertyNames = analytics_reviewer_dedupe(plan.events.flatMap((e) => e.properties?.map((p) => p.name) ?? []).filter(Boolean));
+    newState.suggestedEvents = mergeUnique(priorState.suggestedEvents ?? [], suggestedEventNames);
+    newState.suggestedProperties = mergeUnique(priorState.suggestedProperties ?? [], suggestedPropertyNames);
     if (plan.inlineSuggestions) {
         for (const s of plan.inlineSuggestions) {
             s.explanation = stripUntrustedMarkdown(s.explanation);
@@ -52618,6 +52781,16 @@ function capitalize(s) {
 }
 function analytics_reviewer_dedupe(arr) {
     return Array.from(new Set(arr));
+}
+/**
+ * Union of two string arrays, deduped. Used to carry forward suggested
+ * events / properties across runs so a re-run on a different commit still
+ * sees what the bot proposed earlier — relevant for promote-on-merge,
+ * which trusts the cumulative suggestion history rather than just the
+ * current run's output.
+ */
+function mergeUnique(a, b) {
+    return Array.from(new Set([...a, ...b]));
 }
 function splitToWords(s) {
     return s.split(/[\s_\-/]+/).map((w) => w.toLowerCase()).filter((w) => w.length > 2);
@@ -52967,7 +53140,7 @@ function suggestChannel(pr) {
 
 
 function renderFinalComment(args) {
-    const { pr, productMix, outputs, slackPlan, state, inlineReport } = args;
+    const { pr, productMix, outputs, slackPlan, state, inlineReport, promotionMarkdown } = args;
     // Security (audit Finding 1): apply the markdown/HTML/script sanitizer at
     // the rendering boundary in addition to the reviewer-level sanitization in
     // src/analysis/semantic.ts. Defence-in-depth: if a future reviewer adds a
@@ -52997,6 +53170,13 @@ function renderFinalComment(args) {
         .join(', ');
     lines.push(`<sub>Enabled PostHog products on this project: ${enabledList || '_none detected_'}</sub>`);
     lines.push('');
+    // Promote-on-merge surfacing — appears right after the feature summary
+    // so the reader doesn't have to scroll past suggestions they already
+    // acted on to find what got registered.
+    if (promotionMarkdown) {
+        lines.push(promotionMarkdown);
+        lines.push('');
+    }
     if (applicable.length === 0) {
         lines.push('_No instrumentation suggestions for this PR. The feature summary suggests none of the PostHog products are relevant to the changes in this diff._');
     }
@@ -53183,8 +53363,195 @@ function humanKind(k) {
     }
 }
 
+;// CONCATENATED MODULE: ./src/promote.ts
+/**
+ * Promote-on-merge orchestrator path.
+ *
+ * Runs when the action is invoked with `pr-merged=true` (i.e. the workflow
+ * fired for a `pull_request.closed` event with `pull_request.merged ===
+ * true`). The workflow file emits this via:
+ *
+ *     pr-merged: ${{ github.event.pull_request.merged == true && 'true' || 'false' }}
+ *
+ * What it does:
+ *
+ *   1. Recover the bot's prior `autonomy-state` from its own PR comment so
+ *      we know which events / property additions the bot suggested during
+ *      review.
+ *   2. Scan the merged diff (PR diff at HEAD == the merged commit) for
+ *      `posthog.capture('<event_name>', { … })` patterns that match the
+ *      suggested events. Treat properties added inside known existing
+ *      capture calls as the "suggested-property landed" signal.
+ *   3. For each match, idempotently register an event definition (and
+ *      property definitions where applicable) via the PostHog REST API.
+ *      The PostHogClient methods handle the dedupe so this step is safe
+ *      to re-run.
+ *   4. Hand control back to the normal orchestrator. Because the events
+ *      now exist in the project schema, the analytics reviewer's
+ *      `findMissingEntities` check will pass, the new generation pass
+ *      won't apply a "⏳ Waiting for X" prefix, and existing insights
+ *      will be UPDATED in place (planKey matches, queryHash changes
+ *      since the prefix is being removed).
+ *   5. Persist `mergeCommitSha` + `promotedAt` in the new state so a
+ *      re-run on the same merged PR is idempotent.
+ *
+ * Notes on what this DOES NOT do (and why):
+ *
+ *   - Doesn't auto-delete insights for events that ended up NOT being
+ *     instrumented. The bot only creates / updates / leaves alone — never
+ *     deletes — and the PR author should clean up false-starts manually.
+ *   - Doesn't add events that weren't suggested by the bot, even if they
+ *     appear in the diff. We only "promote" the bot's own
+ *     recommendations to keep the surface area predictable.
+ */
+// `posthog`, `posthog_event`, `posthoganalytics`, `PostHog` (case-insensitive)
+// — covers the SDK names across JS / Python / Ruby. `.capture` / `->capture`
+// / `::capture` covers ., method-call, and namespace-call syntax.
+const promote_CAPTURE_RE = /(?:posthog\w*)(?:\.|->|::)capture\s*\(\s*['"]([^'"]+)['"]/gi;
+// Quoted form (`'key':` or `"key":`) for Python / JSON / strict JS, plus
+// the unquoted JavaScript object-literal form (`key:`). The leading
+// boundary `(?:^|[\s{,])` keeps us from matching arbitrary substrings of
+// other tokens.
+const PROPERTY_KEY_IN_OBJECT = /(?:^|[\s{,])(?:['"]([a-zA-Z_$][\w$]*)['"]|([a-zA-Z_$][\w$]*))\s*:/g;
+/**
+ * Public entry. Given the merged PR's diff and the bot's prior
+ * suggestions, idempotently register the events / properties that landed.
+ *
+ * Throws are intentionally bubbled — if the PostHog API is unreachable
+ * we'd rather fail the merge-time job loudly than silently skip
+ * registration.
+ */
+async function runPromotion(args) {
+    const { pr, posthog, priorSuggestions } = args;
+    const { events: landedEvents, properties: landedProperties } = scanLandedEntities(pr.unifiedDiff, priorSuggestions);
+    const registeredEvents = [];
+    const registeredProperties = [];
+    for (const eventName of landedEvents) {
+        try {
+            const res = await posthog.createEventDefinition({ name: eventName, prUrl: pr.url });
+            registeredEvents.push(res);
+        }
+        catch (err) {
+            console.warn(`[promote] Failed to register event definition "${eventName}":`, err);
+        }
+    }
+    for (const propName of landedProperties) {
+        try {
+            const res = await posthog.createPropertyDefinition({ name: propName, prUrl: pr.url });
+            registeredProperties.push(res);
+        }
+        catch (err) {
+            console.warn(`[promote] Failed to register property definition "${propName}":`, err);
+        }
+    }
+    const allLanded = new Set([...landedEvents, ...landedProperties]);
+    const expected = new Set([
+        ...priorSuggestions.suggestedEventNames,
+        ...priorSuggestions.suggestedPropertyNames,
+    ]);
+    const notLanded = Array.from(expected).filter((name) => !allLanded.has(name));
+    return { registeredEvents, registeredProperties, notLanded };
+}
+/**
+ * Scan a unified diff for `posthog.capture('<name>', { ... })` invocations
+ * that match the bot's suggested events, and properties that were added to
+ * those same capture-call object literals.
+ *
+ * This is intentionally a regex pass, not an AST walk. Inline-suggestion
+ * Phase 2 will likely upgrade to a real parser when we add `extend_existing`
+ * detection at the AST level; for now we accept the regex's false-negatives
+ * (it won't catch oddly-formatted calls) since false-positives are the worse
+ * outcome — we'd register an event that doesn't actually fire and confuse
+ * the user.
+ */
+function scanLandedEntities(unifiedDiff, suggestions) {
+    if (!unifiedDiff)
+        return { events: [], properties: [] };
+    // 1) Find capture('name', …) calls anywhere in the diff. We don't try to
+    //    constrain to "+ added lines" only — the merge brings everything
+    //    in and we want to catch capture calls that survived the review.
+    const eventsInDiff = new Set();
+    let m;
+    promote_CAPTURE_RE.lastIndex = 0;
+    while ((m = promote_CAPTURE_RE.exec(unifiedDiff))) {
+        if (m[1])
+            eventsInDiff.add(m[1]);
+    }
+    const events = Array.from(suggestions.suggestedEventNames).filter((name) => eventsInDiff.has(name));
+    // 2) Find property additions inside capture-call object literals. We
+    //    look at + lines only (truly new additions) so we don't re-register
+    //    properties that already existed. The heuristic: a "+" line that
+    //    contains a quoted identifier followed by ":" and we're inside the
+    //    same hunk as a capture call.
+    const properties = new Set();
+    const lines = unifiedDiff.split('\n');
+    let withinCaptureWindow = 0;
+    for (const line of lines) {
+        if (line.startsWith('@@')) {
+            withinCaptureWindow = 0;
+            continue;
+        }
+        // Track whether we just saw a capture( in any line of the hunk. We
+        // treat the next ~12 lines as "inside the capture call's argument list"
+        // since multi-line capture calls rarely span more than that.
+        if (line.includes('posthog.capture(') || line.includes('posthog_capture(') || line.includes('posthoganalytics.capture(')) {
+            withinCaptureWindow = 12;
+        }
+        else if (withinCaptureWindow > 0) {
+            withinCaptureWindow -= 1;
+        }
+        if (withinCaptureWindow > 0 && line.startsWith('+')) {
+            PROPERTY_KEY_IN_OBJECT.lastIndex = 0;
+            let pm;
+            while ((pm = PROPERTY_KEY_IN_OBJECT.exec(line))) {
+                // Group 1 captures quoted keys, group 2 captures bare JS keys.
+                const key = pm[1] ?? pm[2];
+                if (key && suggestions.suggestedPropertyNames.has(key)) {
+                    properties.add(key);
+                }
+            }
+        }
+    }
+    return { events, properties: Array.from(properties) };
+}
+/**
+ * Build the markdown section that goes into the bot's PR comment after a
+ * successful promote-on-merge pass. Renders a short bullet list of what was
+ * registered, plus any expected-but-not-landed names so the author can
+ * spot mismatches.
+ */
+function renderPromotionMarkdown(result) {
+    const lines = ['### Promoted on merge'];
+    if (result.registeredEvents.length === 0 &&
+        result.registeredProperties.length === 0 &&
+        result.notLanded.length === 0) {
+        lines.push('> No bot-suggested events / properties found in the merged diff. Nothing to register.');
+        return lines.join('\n');
+    }
+    if (result.registeredEvents.length > 0) {
+        lines.push('', '**Pre-registered event definitions**');
+        for (const e of result.registeredEvents) {
+            lines.push(`- 📥 \`${e.name}\` — [event definition](${e.url})`);
+        }
+    }
+    if (result.registeredProperties.length > 0) {
+        lines.push('', '**Pre-registered property definitions**');
+        for (const p of result.registeredProperties) {
+            lines.push(`- 📥 \`${p.name}\` — [property definition](${p.url})`);
+        }
+    }
+    if (result.notLanded.length > 0) {
+        lines.push('', '**Bot-suggested but not in the merged diff**');
+        lines.push('> These didn\'t make it into the merged code. Either the author dropped them or they\'re still pending. The bot won\'t re-register on subsequent merges.');
+        for (const name of result.notLanded) {
+            lines.push(`- ${'`'}${name}${'`'}`);
+        }
+    }
+    return lines.join('\n');
+}
+
 ;// CONCATENATED MODULE: ./package.json
-const package_namespaceObject = /*#__PURE__*/JSON.parse('{"UU":"posthog-pr-autonomy-bot","rE":"0.2.2"}');
+const package_namespaceObject = /*#__PURE__*/JSON.parse('{"UU":"posthog-pr-autonomy-bot","rE":"0.3.0"}');
 ;// CONCATENATED MODULE: ./src/version.ts
 /**
  * Version stamp for the bot. Read at startup and logged so a CI run's
@@ -53234,6 +53601,7 @@ function versionTag() {
 
 
 
+
 const COMMENT_MARKER = '<!-- posthog-pr-autonomy-bot -->';
 async function main() {
     // First line of every run — pin this in your eyes when verifying which
@@ -53260,6 +53628,32 @@ async function main() {
     const newState = emptyState();
     if (priorState.created.length) {
         console.log(`[autonomy-bot] Recovered ${priorState.created.length} prior resource(s) from comment`);
+    }
+    // Promote-on-merge: pre-register the events/properties the bot suggested
+    // during review that now appear in the merged diff. Runs BEFORE the
+    // reviewer so the registered events show up in findExistingEvents() and
+    // the reviewer's findMissingEntities() check passes — that's what causes
+    // affected insights to lose their "⏳ Waiting for X" prefix on this pass.
+    let promotionResult = null;
+    if (config.prMerged) {
+        console.log('[autonomy-bot] PR is merged — running promote-on-merge pass');
+        const suggestedEventNames = new Set(priorState.suggestedEvents ?? []);
+        const suggestedPropertyNames = new Set(priorState.suggestedProperties ?? []);
+        if (suggestedEventNames.size === 0 && suggestedPropertyNames.size === 0) {
+            console.log('[autonomy-bot] No prior suggestions in state — skipping promotion');
+        }
+        else {
+            console.log(`[autonomy-bot] Prior suggestions: ${suggestedEventNames.size} event(s), ${suggestedPropertyNames.size} property/ies`);
+            promotionResult = await runPromotion({
+                pr,
+                posthog,
+                priorSuggestions: { suggestedEventNames, suggestedPropertyNames },
+            });
+            console.log(`[autonomy-bot] Promotion: registered ${promotionResult.registeredEvents.length} event(s), ${promotionResult.registeredProperties.length} property/ies, ${promotionResult.notLanded.length} not landed`);
+            // Record the merge sha + timestamp on newState for re-run idempotency.
+            newState.mergeCommitSha = pr.headSha;
+            newState.promotedAt = new Date().toISOString();
+        }
     }
     console.log('[autonomy-bot] Detecting customer product mix');
     const productMix = await posthog.detectCustomerProductMix();
@@ -53377,6 +53771,7 @@ async function main() {
         slackPlan,
         state: newState,
         inlineReport,
+        promotionMarkdown: promotionResult ? renderPromotionMarkdown(promotionResult) : undefined,
     });
     console.log('[autonomy-bot] Posting / updating PR comment');
     await github.upsertReviewComment(pr.number, commentBody, COMMENT_MARKER);
