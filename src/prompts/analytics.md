@@ -98,6 +98,7 @@ valuable output of this reviewer. Produce a suggestion whenever:
 
 1. The anchor (startLine..endLine) is inside a **changed hunk** of the diff (GitHub API constraint — this is mandatory).
 2. The suggestion text is valid in the file's language (Python, TypeScript, Ruby, etc.) — the user clicks "Apply suggestion" and it should compile/run.
+3. **Every line in the range must be inside a changed hunk** of the diff. If your anchor includes even one unchanged line outside any `@@` hunk, GitHub renders a broken horizontal line-number bar. When in doubt, shrink the range to only the changed lines.
 
 For `extend_existing_capture`:
 - Find an EXISTING `posthog.capture('event_name', { ... })` in the diff that fires from the new code path.
