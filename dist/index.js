@@ -42738,7 +42738,7 @@ const configSchema = objectType({
      *      added properties via `POST /property_definitions/`).
      *   3. Re-run the analytics reviewer so insights drop their ⏳ Waiting-for
      *      prefix now that the schema exists.
-     *   4. Record the merge commit sha in autonomy-state.
+     *   4. Record the merge commit sha in prehog-state.
      *
      * Wired from the workflow as:
      *   pr-merged: ${{ github.event.pull_request.merged == true && 'true' || 'false' }}
@@ -51061,7 +51061,7 @@ class GitHubClient {
     }
     /**
      * Read the existing bot comment for this PR, if any. Used by the orchestrator
-     * to recover persisted state (the autonomy-state JSON block) before running
+     * to recover persisted state (the prehog-state JSON block) before running
      * the reviewers, so re-runs can update rather than duplicate resources.
      */
     async getExistingReviewComment(prNumber, marker) {
@@ -51072,7 +51072,7 @@ class GitHubClient {
             per_page: 100,
         });
         // Security (audit Finding 3): only treat Bot-authored comments as a source
-        // of recoverable autonomy-state. Without this filter, any user could post
+        // of recoverable prehog-state. Without this filter, any user could post
         // a comment containing the marker + a forged state block and have it
         // parsed as the bot's prior state.
         const match = selectBotComment(comments, marker);
@@ -51153,7 +51153,7 @@ class GitHubClient {
  *
  * Fixes security-audit Finding 3 — without (2), ANY user with PR-comment
  * access could post a comment containing the marker and a forged
- * `autonomy-state` JSON block, and the bot would parse the attacker's state
+ * `prehog-state` JSON block, and the bot would parse the attacker's state
  * as if it were its own. The default GitHub-Actions token authenticates as
  * `github-actions[bot]` (type=Bot), so legitimate bot comments still match.
  *
@@ -51269,7 +51269,7 @@ class MCPTransport {
         await this.rpc('initialize', {
             protocolVersion: '2024-11-05',
             capabilities: {},
-            clientInfo: { name: this.cfg.clientName ?? 'posthog-pr-autonomy-bot', version: '0.1.0' },
+            clientInfo: { name: this.cfg.clientName ?? 'prehog', version: '0.1.0' },
         });
         // The MCP spec requires sending an `initialized` notification next. For
         // simple stateless RPC against the PostHog remote MCP it's tolerated to
@@ -51453,10 +51453,10 @@ class PostHogClient {
     async createInsight(plan, prUrl) {
         const body = {
             name: plan.name,
-            description: `${plan.description}\n\nAuto-created by PostHog PR Autonomy Bot for ${prUrl}`,
+            description: `${plan.description}\n\nAuto-created by PreHog for ${prUrl}`,
             query: wrapInsightQueryForStorage(plan.query),
             saved: true,
-            tags: ['auto-created', 'pr-autonomy-bot'],
+            tags: ['auto-created', 'prehog'],
         };
         const res = await this.safe(() => this.viaMcp('insight-create', body), () => this.rest.fetchJson(`/api/projects/${this.projectId}/insights/`, { method: 'POST', body }), null);
         if (!res)
@@ -51472,7 +51472,7 @@ class PostHogClient {
     async updateInsight(args) {
         const body = {
             name: args.plan.name,
-            description: `${args.plan.description}\n\nUpdated by PostHog PR Autonomy Bot for ${args.prUrl}`,
+            description: `${args.plan.description}\n\nUpdated by PreHog for ${args.prUrl}`,
             query: wrapInsightQueryForStorage(args.plan.query),
         };
         const res = await this.safe(() => this.viaMcp('insight-update', {
@@ -51492,8 +51492,8 @@ class PostHogClient {
     async createDashboard(name, description, prUrl) {
         const body = {
             name,
-            description: `${description}\n\nAuto-created by PostHog PR Autonomy Bot for ${prUrl}`,
-            tags: ['auto-created', 'pr-autonomy-bot'],
+            description: `${description}\n\nAuto-created by PreHog for ${prUrl}`,
+            tags: ['auto-created', 'prehog'],
         };
         const res = await this.safe(() => this.viaMcp('dashboard-create', body), () => this.rest.fetchJson(`/api/projects/${this.projectId}/dashboards/`, { method: 'POST', body }), null);
         if (!res)
@@ -51557,7 +51557,7 @@ class PostHogClient {
             // the new def doesn't claim to have a last-seen-at timestamp.
             created_at: null,
             last_seen_at: null,
-            tags: ['auto-registered', 'pr-autonomy-bot'],
+            tags: ['auto-registered', 'prehog'],
         };
         const existing = await this.findEventDefinitionByName(args.name);
         if (existing) {
@@ -51646,7 +51646,7 @@ class PostHogClient {
             filters: { groups: [{ properties: [], rollout_percentage: 0 }] },
             active: false,
             ensure_experience_continuity: false,
-            tags: ['auto-created', 'pr-autonomy-bot'],
+            tags: ['auto-created', 'prehog'],
         };
         const res = await this.safe(() => this.viaMcp('create-feature-flag', body), () => this.rest.fetchJson(`/api/projects/${this.projectId}/feature_flags/`, { method: 'POST', body }), null);
         if (!res)
@@ -51847,7 +51847,7 @@ async function loadPrompt(filename) {
  *     explicitly.
  *
  * Defense in depth: even if a marginal vector slipped past this sanitizer,
- * the PR Autonomy Bot does not store or render its outputs anywhere that
+ * PreHog does not store or render its outputs anywhere that
  * could leak more than the bot's analysis context — but the audit
  * specifically flagged image auto-fetch via Camo, and that's what this
  * closes.
@@ -52302,7 +52302,7 @@ function formatList(items) {
  *
  * What it does:
  *
- *   1. Recover the bot's prior `autonomy-state` from its own PR comment so
+ *   1. Recover the bot's prior `prehog-state` from its own PR comment so
  *      we know which events / property additions the bot suggested during
  *      review.
  *   2. Scan the merged diff (PR diff at HEAD == the merged commit) for
@@ -52502,14 +52502,14 @@ var external_node_crypto_ = __nccwpck_require__(7598);
  * an external state store. Layout:
  *
  *   ... markdown ...
- *   <!-- autonomy-state:{...JSON...} -->
- *   <!-- posthog-pr-autonomy-bot -->
+ *   <!-- prehog-state:{...JSON...} -->
+ *   <!-- prehog -->
  *
  * The orchestrator reads the existing comment before running, parses the JSON
  * block, hands it to reviewers, and re-embeds the updated state on save.
  */
 
-const STATE_OPEN = '<!-- autonomy-state:';
+const STATE_OPEN = '<!-- prehog-state:';
 const STATE_CLOSE = '-->';
 function emptyState() {
     return { version: 1, created: [], postedSuggestions: [] };
@@ -53201,7 +53201,7 @@ async function runInstrumentationReviewer(args) {
  * to decide whether the user has already granted permission to create the flag.
  * For the MVP we expose the permission ask in the PR comment markdown and let
  * the user opt in by reacting to the comment or by re-running the action with
- * a label like `autonomy-bot:create-flag`. The orchestrator inspects PR labels
+ * a label like `prehog:create-flag`. The orchestrator inspects PR labels
  * and sets `userApprovedFlagCreation` before invoking this reviewer.
  */
 async function runFlagsReviewer(args) {
@@ -53275,7 +53275,7 @@ async function runFlagsReviewer(args) {
         try {
             const flag = await posthog.createDraftFeatureFlag({
                 key: s.flagKey,
-                name: `${s.flagKey} (auto-created by PR Autonomy Bot)`,
+                name: `${s.flagKey} (auto-created by PreHog)`,
                 description: s.motivation,
                 prUrl: pr.url,
             });
@@ -53344,7 +53344,7 @@ function renderFlagsMarkdown(args) {
             lines.push(`- 🚩 [${c.name}](${c.url})`);
     }
     else if (pendingPermission) {
-        lines.push('', '> **Permission required.** I have NOT created this flag yet. To create it (inactive, at 0% rollout) add the label `autonomy-bot:create-flag` to this PR or reply `/autonomy create-flag` and I will create it on the next run.');
+        lines.push('', '> **Permission required.** I have NOT created this flag yet. To create it (inactive, at 0% rollout) add the label `prehog:create-flag` to this PR or reply `/prehog create-flag` and I will create it on the next run.');
     }
     return lines.join('\n');
 }
@@ -53416,7 +53416,7 @@ function renderFinalComment(args) {
     const applicable = outputs.filter((o) => o.applicable);
     const skipped = outputs.filter((o) => !o.applicable);
     const lines = [];
-    lines.push('## 🦔 PostHog PR Autonomy Review');
+    lines.push('## 🦔 PreHog Review');
     lines.push('');
     lines.push(`**Feature:** ${summary.oneLine}  ·  **Size:** \`${summary.size}\`  ·  **Surfaces:** ${summary.surfaces.map((s) => `\`${s}\``).join(', ') || '—'}`);
     lines.push('');
@@ -53470,7 +53470,7 @@ function renderFinalComment(args) {
         lines.push('</details>');
         lines.push('');
     }
-    lines.push(`<sub>PR: [#${pr.number}](${pr.url}) · model: \`claude-opus-4-7\` · this is an auto-generated review; reply with /autonomy help for options.</sub>`);
+    lines.push(`<sub>PR: [#${pr.number}](${pr.url}) · model: \`claude-opus-4-7\` · this is an auto-generated review; reply with /prehog help for options.</sub>`);
     // State block — single line, parseable on re-run. Always last so the upsert
     // marker can find it without colliding with other HTML comments.
     lines.push('');
@@ -53597,7 +53597,7 @@ function renderSuggestionCommentBody(s) {
         s.suggestion,
         '```',
         '',
-        `<sub>Inline suggestion from PostHog PR Autonomy Bot · confidence ${(s.confidence * 100).toFixed(0)}%.</sub>`,
+        `<sub>Inline suggestion from PreHog · confidence ${(s.confidence * 100).toFixed(0)}%.</sub>`,
     ].join('\n');
 }
 function humanKind(k) {
@@ -53622,7 +53622,7 @@ function humanKind(k) {
 }
 
 ;// CONCATENATED MODULE: ./package.json
-const package_namespaceObject = /*#__PURE__*/JSON.parse('{"UU":"posthog-pr-autonomy-bot","rE":"0.4.0"}');
+const package_namespaceObject = /*#__PURE__*/JSON.parse('{"UU":"prehog","rE":"0.4.0"}');
 ;// CONCATENATED MODULE: ./src/version.ts
 /**
  * Version stamp for the bot. Read at startup and logged so a CI run's
@@ -53652,7 +53652,7 @@ const src_version_VERSION = package_namespaceObject.rE;
 const COMMIT_SHA = (process.env.GITHUB_SHA ?? 'local').slice(0, 7);
 /**
  * One-line tag you can grep for in CI logs, e.g.:
- *   [autonomy-bot] posthog-pr-autonomy-bot v0.2.0 (rev a244cb6)
+ *   [prehog] prehog v0.2.0 (rev a244cb6)
  */
 function versionTag() {
     return `${package_namespaceObject.UU} v${src_version_VERSION} (rev ${COMMIT_SHA})`;
@@ -53673,12 +53673,12 @@ function versionTag() {
 
 
 
-const COMMENT_MARKER = '<!-- posthog-pr-autonomy-bot -->';
+const COMMENT_MARKER = '<!-- prehog -->';
 async function main() {
     // First line of every run — pin this in your eyes when verifying which
-    // version of the action is deployed (or `grep "posthog-pr-autonomy-bot v"
+    // version of the action is deployed (or `grep "prehog v"
     // run.log` after the fact).
-    console.log(`[autonomy-bot] ${versionTag()}`);
+    console.log(`[prehog] ${versionTag()}`);
     const config = loadConfig();
     const github = new GitHubClient(config.githubToken, config.githubRepository);
     const claude = new ClaudeClient(config.anthropicApiKey, config.model);
@@ -53690,15 +53690,15 @@ async function main() {
             ? { url: config.posthogMcpUrl, token: config.posthogMcpToken ?? config.posthogPersonalApiKey }
             : undefined,
     });
-    console.log(`[autonomy-bot] Loading PR ${config.githubRepository}#${config.githubPrNumber}`);
+    console.log(`[prehog] Loading PR ${config.githubRepository}#${config.githubPrNumber}`);
     const pr = await github.getPullRequestContext(config.githubPrNumber);
-    console.log(`[autonomy-bot] PR has ${pr.changedFiles.length} changed files`);
-    console.log('[autonomy-bot] Reading prior bot comment (if any) for state recovery');
+    console.log(`[prehog] PR has ${pr.changedFiles.length} changed files`);
+    console.log('[prehog] Reading prior bot comment (if any) for state recovery');
     const priorCommentBody = await github.getExistingReviewComment(pr.number, COMMENT_MARKER);
     const priorState = parseStateFromComment(priorCommentBody);
     const newState = emptyState();
     if (priorState.created.length) {
-        console.log(`[autonomy-bot] Recovered ${priorState.created.length} prior resource(s) from comment`);
+        console.log(`[prehog] Recovered ${priorState.created.length} prior resource(s) from comment`);
     }
     // Promote-on-merge: pre-register the events/properties the bot suggested
     // during review that now appear in the merged diff. Runs BEFORE the
@@ -53707,37 +53707,37 @@ async function main() {
     // affected insights to lose their "⏳ Waiting for X" prefix on this pass.
     let promotionResult = null;
     if (config.prMerged) {
-        console.log('[autonomy-bot] PR is merged — running promote-on-merge pass');
+        console.log('[prehog] PR is merged — running promote-on-merge pass');
         const suggestedEventNames = new Set(priorState.suggestedEvents ?? []);
         const suggestedPropertyNames = new Set(priorState.suggestedProperties ?? []);
         if (suggestedEventNames.size === 0 && suggestedPropertyNames.size === 0) {
-            console.log('[autonomy-bot] No prior suggestions in state — skipping promotion');
+            console.log('[prehog] No prior suggestions in state — skipping promotion');
         }
         else {
-            console.log(`[autonomy-bot] Prior suggestions: ${suggestedEventNames.size} event(s), ${suggestedPropertyNames.size} property/ies`);
+            console.log(`[prehog] Prior suggestions: ${suggestedEventNames.size} event(s), ${suggestedPropertyNames.size} property/ies`);
             promotionResult = await runPromotion({
                 pr,
                 posthog,
                 priorSuggestions: { suggestedEventNames, suggestedPropertyNames },
             });
-            console.log(`[autonomy-bot] Promotion: registered ${promotionResult.registeredEvents.length} event(s), ${promotionResult.registeredProperties.length} property/ies, ${promotionResult.notLanded.length} not landed`);
+            console.log(`[prehog] Promotion: registered ${promotionResult.registeredEvents.length} event(s), ${promotionResult.registeredProperties.length} property/ies, ${promotionResult.notLanded.length} not landed`);
             // Record the merge sha + timestamp on newState for re-run idempotency.
             newState.mergeCommitSha = pr.headSha;
             newState.promotedAt = new Date().toISOString();
         }
     }
-    console.log('[autonomy-bot] Detecting customer product mix');
+    console.log('[prehog] Detecting customer product mix');
     const productMix = await posthog.detectCustomerProductMix();
-    console.log('[autonomy-bot] Product mix:', productMix.enabled);
-    console.log('[autonomy-bot] Summarizing feature semantically');
+    console.log('[prehog] Product mix:', productMix.enabled);
+    console.log('[prehog] Summarizing feature semantically');
     const summary = await summarizeFeature(claude, pr);
-    console.log(`[autonomy-bot] Feature: ${summary.oneLine} (size=${summary.size}, surfaces=${summary.surfaces.join(',')})`);
+    console.log(`[prehog] Feature: ${summary.oneLine} (size=${summary.size}, surfaces=${summary.surfaces.join(',')})`);
     const labels = await github.getLabels(pr.number);
-    const userApprovedFlagCreation = labels.includes('autonomy-bot:create-flag');
+    const userApprovedFlagCreation = labels.includes('prehog:create-flag');
     const enabled = new Set(config.enabledReviewers);
     const outputs = [];
     if (enabled.has('analytics')) {
-        console.log('[autonomy-bot] Running analytics reviewer');
+        console.log('[prehog] Running analytics reviewer');
         outputs.push(await runAnalyticsReviewer({
             claude,
             github,
@@ -53755,11 +53755,11 @@ async function main() {
     for (const kind of ['logs', 'errors', 'llm']) {
         if (!enabled.has(kind))
             continue;
-        console.log(`[autonomy-bot] Running ${kind} reviewer`);
+        console.log(`[prehog] Running ${kind} reviewer`);
         outputs.push(await runInstrumentationReviewer({ kind, claude, pr, summary, productMix }));
     }
     if (enabled.has('flags')) {
-        console.log('[autonomy-bot] Running feature flags reviewer');
+        console.log('[prehog] Running feature flags reviewer');
         outputs.push(await runFlagsReviewer({
             claude,
             posthog,
@@ -53782,7 +53782,7 @@ async function main() {
     // a Greptile-style review-comment with a `suggestion` block; the rest get
     // dropped or fall back to the summary comment per reviewer's own markdown.
     const allSuggestions = outputs.flatMap((o) => o.inlineSuggestions);
-    console.log(`[autonomy-bot] Inline suggestions: ${allSuggestions.length} raw from reviewers`);
+    console.log(`[prehog] Inline suggestions: ${allSuggestions.length} raw from reviewers`);
     let inlineReport = { posted: 0, dropped: 0, rejections: [] };
     if (config.enableInlineSuggestions && allSuggestions.length > 0) {
         const alreadyPosted = new Set(priorState.postedSuggestions ?? []);
@@ -53797,13 +53797,13 @@ async function main() {
         inlineReport.rejections = validated
             .filter((v) => !v.valid)
             .map((v) => ({ kind: v.kind, reason: v.rejection ?? 'unknown' }));
-        console.log(`[autonomy-bot] Inline suggestions: ${toPost.length} valid, ${inlineReport.dropped} dropped`);
+        console.log(`[prehog] Inline suggestions: ${toPost.length} valid, ${inlineReport.dropped} dropped`);
         for (const r of inlineReport.rejections) {
-            console.log(`[autonomy-bot]   dropped: ${r.kind} — ${r.reason}`);
+            console.log(`[prehog]   dropped: ${r.kind} — ${r.reason}`);
         }
         if (toPost.length > 0) {
-            console.log(`[autonomy-bot] Posting ${toPost.length} inline suggestion(s)`);
-            const reviewBody = `🦔 **PostHog PR Autonomy Bot** — ${toPost.length} inline suggestion${toPost.length === 1 ? '' : 's'} below. See the top-level comment for the full review.`;
+            console.log(`[prehog] Posting ${toPost.length} inline suggestion(s)`);
+            const reviewBody = `🦔 **PreHog** — ${toPost.length} inline suggestion${toPost.length === 1 ? '' : 's'} below. See the top-level comment for the full review.`;
             try {
                 await github.postReviewWithSuggestions({
                     prNumber: pr.number,
@@ -53823,7 +53823,7 @@ async function main() {
                 newState.postedSuggestions = Array.from(new Set([...(priorState.postedSuggestions ?? []), ...toPost.map((s) => suggestionFingerprint(s))]));
             }
             catch (err) {
-                console.warn('[autonomy-bot] Failed to post inline review:', err.message);
+                console.warn('[prehog] Failed to post inline review:', err.message);
             }
         }
         else {
@@ -53844,12 +53844,12 @@ async function main() {
         inlineReport,
         promotionMarkdown: promotionResult ? renderPromotionMarkdown(promotionResult) : undefined,
     });
-    console.log('[autonomy-bot] Posting / updating PR comment');
+    console.log('[prehog] Posting / updating PR comment');
     await github.upsertReviewComment(pr.number, commentBody, COMMENT_MARKER);
-    console.log('[autonomy-bot] Done.');
+    console.log('[prehog] Done.');
 }
 main().catch((err) => {
-    console.error('[autonomy-bot] fatal:', err);
+    console.error('[prehog] fatal:', err);
     process.exitCode = 1;
 });
 
